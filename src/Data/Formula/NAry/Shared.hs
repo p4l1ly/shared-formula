@@ -7,7 +7,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Data.Formula.NAry.Shared where
 
@@ -15,6 +14,7 @@ import Control.Applicative
 import Control.Monad
 import Data.Foldable
 import Data.Function.Apply ((-$))
+import Data.Function.Between
 import Data.Functor
 import Data.Functor.Compose
 import qualified Data.HashMap.Strict as M
@@ -82,7 +82,7 @@ add term graph = do
           Just refix -> Compose do
             incRefExternal refix graph
             cref <- getRef refix graph
-            itermFor_ (contents cref) \i -> decRefExternal (RefIx i) graph
+            itermFor_ (contents cref) (`decRefExternal` graph)
             return (refix, Just refix)
           Nothing -> Compose do
             refix <-
@@ -110,7 +110,6 @@ add term graph = do
             return (refix, Just refix)
       writeIORef (tCons graph) cons'
       return $ Right refix
-  where
 
 data Simplification t
   = Result Bool
@@ -145,6 +144,11 @@ removeRef :: Hashable t => RefIx -> Graph t -> IO ()
 removeRef refix graph = do
   term <- contents <$> getRef refix graph
   modifyIORef' (tCons graph) (M.delete term)
+  case term of
+    INot refix' -> decRefInternal refix refix' graph
+    IAnd refixs -> forIntSet_ refixs \refix' -> decRefInternal refix refix' graph
+    IOr refixs -> forIntSet_ refixs \refix' -> decRefInternal refix refix' graph
+    ILeaf _ -> return ()
   modifyIORef' (freeList graph) (refix :)
 
 data Change t
@@ -155,7 +159,7 @@ data Change t
 notifyParents :: Hashable t => RefIx -> Change t -> Graph t -> IO ()
 notifyParents refix change graph = do
   CountedRef{parents} <- getRef refix graph
-  forIntSet_ parents \(RefIx -> parentRefix) ->
+  forIntSet_ parents \parentRefix ->
     onChildChange parentRefix refix change graph
 
 changeChildsAnd :: Hashable t => RefIx -> IS.IntSet -> Graph t -> IO ()
@@ -209,34 +213,36 @@ onChildSingleParent childRefix@(RefIx childIx) graph = do
   child <- getRef childRefix graph
   case contents child of
     IAnd childChilds -> do
-      forIntSet_ (parents child) \(RefIx -> parentRefix) -> do
+      forIntSet_ (parents child) \parentRefix -> do
         parent <- getRef parentRefix graph
         case contents parent of
           old@(IAnd parentChilds) -> do
             -- We will refer the grandchildren.
-            forIntSet_ childChilds \i -> incRefInternal parentRefix (RefIx i) graph
+            forIntSet_ childChilds \i -> incRefInternal parentRefix i graph
             -- The child can be unreferred (and thus deallocated).
             decRefInternal parentRefix childRefix graph
             -- Let's remove the child and add the grandchildren.
             let parentChilds' = IS.delete childIx parentChilds
-            parentChilds'' <- intSetFoldM parentChilds' childChilds \i uniqXs' ->
-              swallowAnd graph (Just parentRefix) uniqXs' (RefIx i)
+            parentChilds'' <-
+              swallowAnd graph (Just parentRefix) $
+                intSetFoldM parentChilds' childChilds
             when (parentChilds' /= parentChilds'') do
               changeChildsAnd parentRefix parentChilds'' graph
           _ -> return ()
     IOr childChilds ->
-      forIntSet_ (parents child) \(RefIx -> parentRefix) -> do
+      forIntSet_ (parents child) \parentRefix -> do
         parent <- getRef parentRefix graph
         case contents parent of
           old@(IOr parentChilds) -> do
             -- We will refer the grandchildren.
-            forIntSet_ childChilds \i -> incRefInternal parentRefix (RefIx i) graph
+            forIntSet_ childChilds \i -> incRefInternal parentRefix i graph
             -- The child can be unreferred (and thus deallocated).
             decRefInternal parentRefix childRefix graph
             -- Let's add the grandchildren.
             let parentChilds' = IS.delete childIx parentChilds
-            parentChilds'' <- intSetFoldM parentChilds' childChilds \i uniqXs' ->
-              swallowOr graph (Just parentRefix) uniqXs' (RefIx i)
+            parentChilds'' <-
+              swallowOr graph (Just parentRefix) $
+                intSetFoldM parentChilds' childChilds
             when (parentChilds' /= parentChilds'') do
               changeChildsOr parentRefix parentChilds'' graph
           _ -> return ()
@@ -272,12 +278,12 @@ onChildChange parentRefix childRefix@(RefIx childIx) change graph = case change 
       IAnd parentChilds -> do
         let parentChilds' = IS.delete childIx parentChilds
         parentChilds'' <-
-          swallowAnd graph (Just parentRefix) parentChilds' (RefIx childIx')
+          swallowAnd graph (Just parentRefix) $ parentChilds' ~$~ RefIx childIx'
         changeChildsAnd parentRefix parentChilds'' graph
       IOr parentChilds -> do
         let parentChilds' = IS.delete childIx parentChilds
         parentChilds'' <-
-          swallowOr graph (Just parentRefix) parentChilds' (RefIx childIx')
+          swallowOr graph (Just parentRefix) $ parentChilds' ~$~ RefIx childIx'
         changeChildsOr parentRefix parentChilds'' graph
       ILeaf t -> error "ILeaf: onChildChange"
 
@@ -304,25 +310,25 @@ onCreate :: RefIx -> Graph t -> IO ()
 onCreate refix@(RefIx parent) graph = do
   cref <- getRef refix graph
   itermFor_ (contents cref) \i ->
-    modifyRef (RefIx i) -$ graph $ \child@CountedRef{parents} ->
+    modifyRef i -$ graph $ \child@CountedRef{parents} ->
       child{parents = IS.insert parent parents}
 
-forIntSet_ :: Applicative f => IS.IntSet -> (Int -> f b) -> f ()
-forIntSet_ xs step = IS.fold (\i a -> a <* step i) (pure ()) xs
+forIntSet_ :: Applicative f => IS.IntSet -> (RefIx -> f b) -> f ()
+forIntSet_ xs step = IS.fold (\i a -> a <* step (RefIx i)) (pure ()) xs
 
-intSetFoldM :: Monad f => b -> IS.IntSet -> (Int -> b -> f b) -> f b
-intSetFoldM init xs step = IS.fold (\i a -> a >>= step i) (pure init) xs
+intSetFoldM :: Monad f => b -> IS.IntSet -> (b -> RefIx -> f b) -> f b
+intSetFoldM init xs step = IS.fold (\i a -> a >>= (`step` RefIx i)) (pure init) xs
 
-itermFor_ :: Applicative f => ITerm t -> (Int -> f b) -> f ()
+itermFor_ :: Applicative f => ITerm t -> (RefIx -> f b) -> f ()
 itermFor_ (IAnd xs) step = forIntSet_ xs step
 itermFor_ (IOr xs) step = forIntSet_ xs step
-itermFor_ (INot (RefIx x)) step = () <$ step x
+itermFor_ (INot (RefIx x)) step = () <$ step (RefIx x)
 itermFor_ (ILeaf x) step = pure ()
 
-itermFoldM :: Monad f => b -> ITerm t -> (Int -> b -> f b) -> f b
+itermFoldM :: Monad f => b -> ITerm t -> (b -> RefIx -> f b) -> f b
 itermFoldM b (IAnd xs) step = intSetFoldM b xs step
 itermFoldM b (IOr xs) step = intSetFoldM b xs step
-itermFoldM b (INot (RefIx x)) step = step x b
+itermFoldM b (INot x) step = step b x
 itermFoldM b (ILeaf x) step = pure b
 
 data DumbCount = Zero | One | Many deriving (Show, Eq, Ord)
@@ -335,8 +341,14 @@ dumbInc Many = Many
 intSetDumbSize :: IS.IntSet -> DumbCount
 intSetDumbSize = IS.fold (const dumbInc) Zero -- TODO it's probably still O(n) but O(1) should be somehow possible
 
-swallowAnd :: Hashable t => Graph t -> Maybe RefIx -> IS.IntSet -> RefIx -> IO IS.IntSet
-swallowAnd graph parent uniqXs refix = do
+swallowAnd ::
+  Hashable t =>
+  Graph t ->
+  Maybe RefIx ->
+  ((IS.IntSet -> RefIx -> IO IS.IntSet) -> IO IS.IntSet) ->
+  IO IS.IntSet
+swallowAnd graph parent extFold = do
+  -- Flattening
   let rec uniqXs refix@(RefIx x)
         | IS.member x uniqXs = do
           decRef refix graph
@@ -344,17 +356,32 @@ swallowAnd graph parent uniqXs refix = do
         | otherwise = do
           getRef refix graph >>= \case
             CountedRef{contents = IAnd childXs, parentCount = 1} -> do
-              forIntSet_ childXs \i -> incRef (RefIx i) graph
+              forIntSet_ childXs (`incRef` graph)
               decRef refix graph
-              intSetFoldM uniqXs childXs \i uniqXs' -> rec uniqXs' (RefIx i)
+              intSetFoldM uniqXs childXs rec
             _ -> return (IS.insert x uniqXs)
-  rec uniqXs refix
+  myElems <- extFold rec
+
+  -- Absorption
+  intSetFoldM myElems myElems \myElems' refix@(RefIx ix) -> do
+    getRef refix graph >>= \case
+      CountedRef{contents = IOr childXs}
+        | IS.fold (\i r -> r || IS.member i myElems) False childXs -> do
+          decRef refix graph
+          return (IS.delete ix myElems')
+      _ -> return myElems'
   where
     incRef = maybe incRefExternal incRefInternal parent
     decRef = maybe decRefExternal decRefInternal parent
 
-swallowOr :: Hashable t => Graph t -> Maybe RefIx -> IS.IntSet -> RefIx -> IO IS.IntSet
-swallowOr graph parent uniqXs refix = do
+swallowOr ::
+  Hashable t =>
+  Graph t ->
+  Maybe RefIx ->
+  ((IS.IntSet -> RefIx -> IO IS.IntSet) -> IO IS.IntSet) ->
+  IO IS.IntSet
+swallowOr graph parent extFold = do
+  -- Flattening
   let rec uniqXs refix@(RefIx x)
         | IS.member x uniqXs = do
           decRef refix graph
@@ -362,11 +389,20 @@ swallowOr graph parent uniqXs refix = do
         | otherwise = do
           getRef refix graph >>= \case
             CountedRef{contents = IOr childXs, parentCount = 1} -> do
-              forIntSet_ childXs \i -> incRef (RefIx i) graph
+              forIntSet_ childXs (`incRef` graph)
               decRef refix graph
-              intSetFoldM uniqXs childXs \i uniqXs' -> rec uniqXs' (RefIx i)
+              intSetFoldM uniqXs childXs rec
             _ -> return (IS.insert x uniqXs)
-  rec uniqXs refix
+  myElems <- extFold rec
+
+  -- Absorption
+  intSetFoldM myElems myElems \myElems' refix@(RefIx ix) -> do
+    getRef refix graph >>= \case
+      CountedRef{contents = IAnd childXs}
+        | IS.fold (\i r -> r || IS.member i myElems) False childXs -> do
+          decRef refix graph
+          return (IS.delete ix myElems')
+      _ -> return myElems'
   where
     incRef = maybe incRefExternal incRefInternal parent
     decRef = maybe decRefExternal decRefInternal parent
@@ -387,13 +423,13 @@ swallowNot graph parent refix = do
 
 simplifyNew :: Hashable t => Term t RefIx -> Graph t -> IO (Simplification t)
 simplifyNew (And xs) graph = do
-  xs' <- foldM (swallowAnd graph Nothing) IS.empty xs
+  xs' <- swallowAnd graph Nothing $ foldM -$ IS.empty -$ xs
   case intSetDumbSize xs' of
     Zero -> return $ Result True
     One -> return $ Singleton (RefIx $ head $ IS.toList xs')
     Many -> return $ Formula (IAnd xs')
 simplifyNew (Or xs) graph = do
-  xs' <- foldM (swallowOr graph Nothing) IS.empty xs
+  xs' <- swallowOr graph Nothing $ foldM -$ IS.empty -$ xs
   return case intSetDumbSize xs' of
     Zero -> Result False
     One -> Singleton (RefIx $ head $ IS.toList xs')
