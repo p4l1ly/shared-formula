@@ -77,39 +77,40 @@ add term graph = do
     Singleton refix -> return $ Right refix
     Formula term' -> do
       cons <- readIORef (tCons graph)
-      (refix, cons') <- getCompose (M.alterF (alter term') term' cons)
+      (refix, cons') <- getCompose $
+        M.alterF -$ term' -$ cons $ \case
+          Just refix -> Compose do
+            incRefExternal refix graph
+            cref <- getRef refix graph
+            itermFor_ (contents cref) \i -> decRefExternal (RefIx i) graph
+            return (refix, Just refix)
+          Nothing -> Compose do
+            refix <-
+              readIORef (freeList graph) >>= \case
+                (refix : rest) -> do
+                  writeIORef (freeList graph) rest
+                  return refix
+                [] -> do
+                  refs_ <- readIORef (refs graph)
+                  let capacity = VM.length refs_
+                  len <- readIORef (refsLen graph)
+                  writeIORef (refsLen graph) (len + 1)
+                  when (len == capacity) do
+                    refs_' <- VM.unsafeGrow refs_ (len + 1) -- we grow twice + 1
+                    writeIORef (refs graph) refs_'
+                  return (RefIx len)
+            let cref =
+                  CountedRef
+                    { contents = term'
+                    , parentCount = 1
+                    , parents = IS.empty
+                    }
+            setRef refix cref graph
+            onCreate refix graph
+            return (refix, Just refix)
       writeIORef (tCons graph) cons'
       return $ Right refix
   where
-    alter _ (Just refix) = Compose do
-      incRefExternal refix graph
-      cref <- getRef refix graph
-      itermFor_ (contents cref) \i -> decRefExternal (RefIx i) graph
-      return (refix, Just refix)
-    alter term Nothing = Compose do
-      refix <-
-        readIORef (freeList graph) >>= \case
-          (refix : rest) -> do
-            writeIORef (freeList graph) rest
-            return refix
-          [] -> do
-            refs_ <- readIORef (refs graph)
-            let capacity = VM.length refs_
-            len <- readIORef (refsLen graph)
-            writeIORef (refsLen graph) (len + 1)
-            when (len == capacity) do
-              refs_' <- VM.unsafeGrow refs_ (len + 1) -- we grow twice + 1
-              writeIORef (refs graph) refs_'
-            return (RefIx len)
-      let cref =
-            CountedRef
-              { contents = term
-              , parentCount = 1
-              , parents = IS.empty
-              }
-      setRef refix cref graph
-      onCreate refix graph
-      return (refix, Just refix)
 
 data Simplification t
   = Result Bool
@@ -149,7 +150,6 @@ removeRef refix graph = do
 data Change t
   = Evaluated Bool
   | Redirected RefIx
-  | Changed (ITerm t)
   deriving (Show, Eq)
 
 notifyParents :: Hashable t => RefIx -> Change t -> Graph t -> IO ()
@@ -160,38 +160,49 @@ notifyParents refix change graph = do
 
 changeChildsAnd :: Hashable t => RefIx -> IS.IntSet -> Graph t -> IO ()
 changeChildsAnd refix childs' graph = do
-  node@CountedRef{contents = old@(IAnd childs), parents} <- getRef refix graph
-  change <- case intSetDumbSize childs' of
-    Zero ->
-      -- Our deallocation will be handled by parents.
-      return $ Evaluated True
-    One ->
-      -- Our deallocation will be handled by parents.
-      return $ Redirected (RefIx $ head $ IS.toList childs')
+  node@CountedRef{contents = term, parents} <- getRef refix graph
+  tCons_ <- readIORef (tCons graph)
+  let tCons_' = M.delete term tCons_
+  let term' = IAnd childs'
+  case intSetDumbSize childs' of
+    Zero -> do
+      writeIORef (tCons graph) tCons_'
+      notifyParents refix (Evaluated True) graph
+    One -> do
+      writeIORef (tCons graph) tCons_'
+      let refix' = RefIx $ head $ IS.toList childs'
+      notifyParents refix (Redirected refix') graph
     Many -> do
-      -- We change ourselves *before* notifying the parents.
-      -- This should be safe as our logical value should not change.
-      setRef refix node{contents = IAnd childs'} graph
-      return $ Changed old
-  notifyParents refix change graph
+      case M.lookup term' tCons_' of
+        Just refix' -> do
+          writeIORef (tCons graph) tCons_'
+          notifyParents refix (Redirected refix') graph
+        Nothing -> do
+          writeIORef (tCons graph) (M.insert term' refix tCons_')
+          setRef refix node{contents = term'} graph
 
 changeChildsOr :: Hashable t => RefIx -> IS.IntSet -> Graph t -> IO ()
 changeChildsOr refix childs' graph = do
-  node@CountedRef{contents = old@(IOr childs), parents} <- getRef refix graph
-  -- We've been evaluated, shrinked to a singleton or only generally changed.
-  change <- case intSetDumbSize childs' of
-    Zero ->
-      -- Our deallocation will be handled by parents.
-      return $ Evaluated False
-    One ->
-      -- Our deallocation will be handled by parents.
-      return $ Redirected (RefIx $ head $ IS.toList childs')
+  node@CountedRef{contents = term, parents} <- getRef refix graph
+  tCons_ <- readIORef (tCons graph)
+  let tCons_' = M.delete term tCons_
+  let term' = IOr childs'
+  case intSetDumbSize childs' of
+    Zero -> do
+      writeIORef (tCons graph) tCons_'
+      notifyParents refix (Evaluated False) graph
+    One -> do
+      writeIORef (tCons graph) tCons_'
+      let refix' = RefIx $ head $ IS.toList childs'
+      notifyParents refix (Redirected refix') graph
     Many -> do
-      -- We change ourselves *before* notifying the parents.
-      -- This should be safe as our logical value should not change.
-      setRef refix node{contents = IOr childs'} graph
-      return $ Changed old
-  notifyParents refix change graph
+      case M.lookup term' tCons_' of
+        Just refix' -> do
+          writeIORef (tCons graph) tCons_'
+          notifyParents refix (Redirected refix') graph
+        Nothing -> do
+          writeIORef (tCons graph) (M.insert term' refix tCons_')
+          setRef refix node{contents = term'} graph
 
 onChildSingleParent :: Hashable t => RefIx -> Graph t -> IO ()
 onChildSingleParent childRefix@(RefIx childIx) graph = do
@@ -210,7 +221,8 @@ onChildSingleParent childRefix@(RefIx childIx) graph = do
             let parentChilds' = IS.delete childIx parentChilds
             parentChilds'' <- intSetFoldM parentChilds' childChilds \i uniqXs' ->
               swallowAnd graph (Just parentRefix) uniqXs' (RefIx i)
-            changeChildsAnd parentRefix parentChilds'' graph
+            when (parentChilds' /= parentChilds'') do
+              changeChildsAnd parentRefix parentChilds'' graph
           _ -> return ()
     IOr childChilds ->
       forIntSet_ (parents child) \(RefIx -> parentRefix) -> do
@@ -225,7 +237,8 @@ onChildSingleParent childRefix@(RefIx childIx) graph = do
             let parentChilds' = IS.delete childIx parentChilds
             parentChilds'' <- intSetFoldM parentChilds' childChilds \i uniqXs' ->
               swallowOr graph (Just parentRefix) uniqXs' (RefIx i)
-            changeChildsOr parentRefix parentChilds'' graph
+            when (parentChilds' /= parentChilds'') do
+              changeChildsOr parentRefix parentChilds'' graph
           _ -> return ()
     INot _ -> return ()
     ILeaf _ -> return ()
@@ -267,7 +280,6 @@ onChildChange parentRefix childRefix@(RefIx childIx) change graph = case change 
           swallowOr graph (Just parentRefix) parentChilds' (RefIx childIx')
         changeChildsOr parentRefix parentChilds'' graph
       ILeaf t -> error "ILeaf: onChildChange"
-  Changed _ -> return ()
 
 decRefExternal :: Hashable t => RefIx -> Graph t -> IO ()
 decRefExternal refix graph = do

@@ -39,6 +39,30 @@ main = sydTest $
       andABCContents <- Formula.contents <$> Formula.getRef andABC graph
       andABCContents `shouldBe` Formula.IAnd (IS.fromList [0, 1, 2])
 
+      Right andABC2 <- Formula.add (And [a, b, c]) graph
+      andABC2 `shouldBe` Formula.RefIx 3
+
+    it "flattens ORs" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+      Right c <- Formula.add (Leaf "c") graph
+      c `shouldBe` Formula.RefIx 2
+
+      Right orAB <- Formula.add (Or [a, b]) graph
+      orAB `shouldBe` Formula.RefIx 3
+
+      Right orABC <- Formula.add (Or [orAB, c]) graph
+      orABC `shouldBe` Formula.RefIx 3
+      orABCContents <- Formula.contents <$> Formula.getRef orABC graph
+      orABCContents `shouldBe` Formula.IOr (IS.fromList [0, 1, 2])
+
+      Right orABC2 <- Formula.add (Or [a, b, c]) graph
+      orABC2 `shouldBe` Formula.RefIx 3
+
     it "flattens ANDs subsequently" do
       graph <- Formula.empty 1
 
@@ -65,23 +89,8 @@ main = sydTest $
       Right d <- Formula.add (Leaf "d") graph
       d `shouldBe` Formula.RefIx 3
 
-    it "flattens ORs" do
-      graph <- Formula.empty 1
-
-      Right a <- Formula.add (Leaf "a") graph
-      a `shouldBe` Formula.RefIx 0
-      Right b <- Formula.add (Leaf "b") graph
-      b `shouldBe` Formula.RefIx 1
-      Right c <- Formula.add (Leaf "c") graph
-      c `shouldBe` Formula.RefIx 2
-
-      Right andAB <- Formula.add (Or [a, b]) graph
-      andAB `shouldBe` Formula.RefIx 3
-
-      Right andABC <- Formula.add (Or [andAB, c]) graph
-      andABC `shouldBe` Formula.RefIx 3
-      andABCContents <- Formula.contents <$> Formula.getRef andABC graph
-      andABCContents `shouldBe` Formula.IOr (IS.fromList [0, 1, 2])
+      Right andABC2 <- Formula.add (And [a, b, c]) graph
+      andABC2 `shouldBe` Formula.RefIx 4
 
     it "flattens ORs subsequently" do
       graph <- Formula.empty 1
@@ -93,21 +102,24 @@ main = sydTest $
       Right c <- Formula.add (Leaf "c") graph
       c `shouldBe` Formula.RefIx 2
 
-      Right andAB <- Formula.add (Or [a, b]) graph
-      andAB `shouldBe` Formula.RefIx 3
-      Formula.incRefExternal andAB graph
+      Right orAB <- Formula.add (Or [a, b]) graph
+      orAB `shouldBe` Formula.RefIx 3
+      Formula.incRefExternal orAB graph
 
-      Right andABC <- Formula.add (Or [andAB, c]) graph
-      andABC `shouldBe` Formula.RefIx 4
-      andABCContents <- Formula.contents <$> Formula.getRef andABC graph
-      andABCContents `shouldBe` Formula.IOr (IS.fromList [3, 2])
+      Right orABC <- Formula.add (Or [orAB, c]) graph
+      orABC `shouldBe` Formula.RefIx 4
+      orABCContents <- Formula.contents <$> Formula.getRef orABC graph
+      orABCContents `shouldBe` Formula.IOr (IS.fromList [3, 2])
 
-      Formula.decRefExternal andAB graph
-      andABCContents <- Formula.contents <$> Formula.getRef andABC graph
-      andABCContents `shouldBe` Formula.IOr (IS.fromList [0, 1, 2])
+      Formula.decRefExternal orAB graph
+      orABCContents <- Formula.contents <$> Formula.getRef orABC graph
+      orABCContents `shouldBe` Formula.IOr (IS.fromList [0, 1, 2])
 
       Right d <- Formula.add (Leaf "d") graph
       d `shouldBe` Formula.RefIx 3
+
+      Right orABC2 <- Formula.add (Or [a, b, c]) graph
+      orABC2 `shouldBe` Formula.RefIx 4
 
     it "finds sharing" do
       graph <- Formula.empty 1
