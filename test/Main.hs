@@ -218,11 +218,92 @@ main = sydTest $
       Formula.incRefExternal b graph
       b `shouldBe` Formula.RefIx 1
 
-      Right andAB <- Formula.add (Or [a, b]) graph
-      andAB `shouldBe` Formula.RefIx 2
+      Right orAB <- Formula.add (Or [a, b]) graph
+      orAB `shouldBe` Formula.RefIx 2
 
-      Right andBOrAB <- Formula.add (And [andAB, b]) graph
+      Right andBOrAB <- Formula.add (And [orAB, b]) graph
       andBOrAB `shouldBe` Formula.RefIx 1
 
       freeList <- readIORef (Formula.freeList graph)
       sort freeList `shouldBe` [Formula.RefIx 0, Formula.RefIx 2]
+
+    it "absorbs OR into AND subsequently" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+      Right c <- Formula.add (Leaf "c") graph
+      c `shouldBe` Formula.RefIx 2
+
+      Right orAB <- Formula.add (Or [a, b]) graph
+      Formula.incRefExternal orAB graph
+      orAB `shouldBe` Formula.RefIx 3
+
+      Right orABC <- Formula.add (Or [orAB, c]) graph
+      orABC `shouldBe` Formula.RefIx 4
+
+      Right andAOrABC <- Formula.add (And [a, orABC]) graph
+      andAOrABC `shouldBe` Formula.RefIx 5
+
+      Right d <- Formula.add (Leaf "d") graph
+      d `shouldBe` Formula.RefIx 6
+
+      Right orDAndAOrABC <- Formula.add (Or [d, andAOrABC]) graph
+      orDAndAOrABC `shouldBe` Formula.RefIx 7
+
+      Formula.decRefExternal orAB graph
+
+      freeList <- readIORef (Formula.freeList graph)
+      sort freeList `shouldBe` map Formula.RefIx [1 .. 5]
+
+      rootContents <- Formula.contents <$> Formula.getRef orDAndAOrABC graph
+      rootContents `shouldBe` Formula.IOr (IS.fromList [0, 6])
+
+    it "evaluates (a AND b AND !a) = 1, (a OR b OR !a) = 0" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      Formula.incRefExternal a graph
+      b `shouldBe` Formula.RefIx 1
+
+      Right na <- Formula.add (Not a) graph
+      Formula.incRefExternal na graph
+      na `shouldBe` Formula.RefIx 2
+
+      Left False <- Formula.add (And [a, b, na]) graph
+      Left True <- Formula.add (Or [a, b, na]) graph
+      return ()
+
+    it "evaluates (a AND (b AND !a)) = 1, (a OR (b OR !a)) = 0" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      Formula.incRefExternal a graph
+      b `shouldBe` Formula.RefIx 1
+
+      Right na <- Formula.add (Not a) graph
+      Formula.incRefExternal na graph
+      na `shouldBe` Formula.RefIx 2
+
+      Right andBNotA <- Formula.add (And [b, na]) graph
+      Formula.incRefExternal andBNotA graph
+      andBNotA `shouldBe` Formula.RefIx 3
+
+      Right orBNotA <- Formula.add (Or [b, na]) graph
+      Formula.incRefExternal orBNotA graph
+      orBNotA `shouldBe` Formula.RefIx 4
+
+      Left False <- Formula.add (And [andBNotA, a]) graph
+      Left True <- Formula.add (Or [orBNotA, a]) graph
+      return ()
