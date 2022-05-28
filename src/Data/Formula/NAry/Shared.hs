@@ -399,13 +399,13 @@ swallowAnd graph parent extFold = do
           return (IS.delete ix myElems')
       _ -> return myElems'
 
-  -- Negation law (a AND NOT a) = 0
+  -- Negation law: a AND NOT a = 0
   evaluated <- intSetFoldM False myElems' \case
     True -> \_ -> return True
     False -> \refix ->
       getRef refix graph >>= \case
         CountedRef{contents = INot (RefIx nix)} -> return $ IS.member nix myElems'
-        -- Deep negation law (a AND (NOT a AND b)) = 0
+        -- Deep negation law: a AND (b AND NOT a) = 0
         CountedRef{contents = IAnd childIxs} -> do
           intSetFoldM False childIxs \case
             True -> \_ -> return True
@@ -417,7 +417,55 @@ swallowAnd graph parent extFold = do
         _ -> return False
   if evaluated
     then return Nothing
-    else return $ Just myElems'
+    else do
+      -- Law of common identities: a OR (b AND NOT a) = a OR b
+      intSetFoldM (Just myElems') myElems' \case
+        Nothing -> \_ -> return Nothing
+        Just myElems'' -> \childRefix@(RefIx childIx) -> do
+          getRef childRefix graph >>= \case
+            node@CountedRef{contents = IOr childIxs, parentCount = 1} -> do
+              removed <- intSetFoldM [] childIxs \removed grandchildRefix -> do
+                getRef grandchildRefix graph >>= \case
+                  CountedRef{contents = INot (RefIx grandgrandchildIx)}
+                    | IS.member grandgrandchildIx myElems'' -> return (grandchildRefix : removed)
+                  _ -> return removed
+              case removed of
+                [] -> return (Just myElems'')
+                _ -> do
+                  for_ removed $ \grandchildIx ->
+                    decRefInternal childRefix grandchildIx graph
+                  let removedSet = IS.fromList $ map (\(RefIx i) -> i) removed
+                  childIxs' <- swallowOr graph (Just childRefix) $ \_ ->
+                    return $ IS.difference childIxs removedSet
+                  case childIxs' of
+                    Nothing -> do
+                      decRef childRefix graph
+                      swallowAnd graph parent $ \_ -> return $ IS.delete childIx myElems''
+                    Just childIxs' ->
+                      case intSetDumbSize childIxs' of
+                        Zero -> do
+                          forIntSet_ myElems'' (`decRef` graph)
+                          return Nothing
+                        One -> do
+                          let theOneRefix = RefIx $ head $ IS.toList childIxs'
+                          incRef theOneRefix graph
+                          decRef childRefix graph
+                          swallowAnd graph parent $ IS.delete childIx myElems'' ~$~ theOneRefix
+                        Many -> do
+                          tCons_ <- readIORef (tCons graph)
+                          let tCons_' = M.delete (IOr childIxs) tCons_
+                          let term' = IOr childIxs'
+                          case M.lookup term' tCons_' of
+                            Just childRefix' -> do
+                              incRef childRefix' graph
+                              decRef childRefix graph
+                              writeIORef (tCons graph) tCons_'
+                              swallowAnd graph parent $ IS.delete childIx myElems'' ~$~ childRefix'
+                            Nothing -> do
+                              writeIORef (tCons graph) (M.insert term' childRefix tCons_')
+                              setRef childRefix node{contents = term'} graph
+                              swallowAnd graph parent $ \_ -> return myElems''
+            _ -> return (Just myElems'')
   where
     incRef = maybe incRefExternal incRefInternal parent
     decRef = maybe decRefExternal decRefInternal parent
@@ -444,33 +492,81 @@ swallowOr graph parent extFold = do
   myElems <- extFold rec
 
   -- Absorption
-  myElems' <- intSetFoldM myElems myElems \myElems' refix@(RefIx ix) -> do
-    getRef refix graph >>= \case
+  myElems' <- intSetFoldM myElems myElems \myElems' childRefix@(RefIx childIx) -> do
+    getRef childRefix graph >>= \case
       CountedRef{contents = IAnd childXs}
         | IS.fold (\i r -> IS.member i myElems || r) False childXs -> do
-          decRef refix graph
-          return (IS.delete ix myElems')
+          decRef childRefix graph
+          return (IS.delete childIx myElems')
       _ -> return myElems'
 
-  -- Negation law (a OR NOT a) = 1
+  -- Negation law: a OR NOT a = 1
   evaluated <- intSetFoldM False myElems' \case
     True -> \_ -> return True
-    False -> \refix ->
-      getRef refix graph >>= \case
+    False -> \childRefix ->
+      getRef childRefix graph >>= \case
         CountedRef{contents = INot (RefIx nix)} -> return $ IS.member nix myElems'
-        -- Deep negation law (a OR (NOT a OR b)) = 1
+        -- Deep negation law: a OR (b OR NOT a) = 1
         CountedRef{contents = IOr childIxs} -> do
           intSetFoldM False childIxs \case
             True -> \_ -> return True
-            False -> \refix ->
-              getRef refix graph >>= \case
+            False -> \childRefix ->
+              getRef childRefix graph >>= \case
                 CountedRef{contents = INot (RefIx nix)} ->
                   return $ IS.member nix myElems'
                 _ -> return False
         _ -> return False
   if evaluated
     then return Nothing
-    else return $ Just myElems'
+    else do
+      -- Law of common identities: a OR (b AND NOT a) = a OR b
+      intSetFoldM (Just myElems') myElems' \case
+        Nothing -> \_ -> return Nothing
+        Just myElems'' -> \childRefix@(RefIx childIx) -> do
+          getRef childRefix graph >>= \case
+            node@CountedRef{contents = IAnd childIxs, parentCount = 1} -> do
+              removed <- intSetFoldM [] childIxs \removed grandchildRefix -> do
+                getRef grandchildRefix graph >>= \case
+                  CountedRef{contents = INot (RefIx grandgrandchildIx)}
+                    | IS.member grandgrandchildIx myElems'' -> return (grandchildRefix : removed)
+                  _ -> return removed
+              case removed of
+                [] -> return (Just myElems'')
+                _ -> do
+                  for_ removed $ \grandchildIx ->
+                    decRefInternal childRefix grandchildIx graph
+                  let removedSet = IS.fromList $ map (\(RefIx i) -> i) removed
+                  childIxs' <- swallowAnd graph (Just childRefix) $ \_ ->
+                    return $ IS.difference childIxs removedSet
+                  case childIxs' of
+                    Nothing -> do
+                      decRef childRefix graph
+                      swallowOr graph parent $ \_ -> return $ IS.delete childIx myElems''
+                    Just childIxs' ->
+                      case intSetDumbSize childIxs' of
+                        Zero -> do
+                          forIntSet_ myElems'' (`decRef` graph)
+                          return Nothing
+                        One -> do
+                          let theOneRefix = RefIx $ head $ IS.toList childIxs'
+                          incRef theOneRefix graph
+                          decRef childRefix graph
+                          swallowOr graph parent $ IS.delete childIx myElems'' ~$~ theOneRefix
+                        Many -> do
+                          tCons_ <- readIORef (tCons graph)
+                          let tCons_' = M.delete (IAnd childIxs) tCons_
+                          let term' = IAnd childIxs'
+                          case M.lookup term' tCons_' of
+                            Just childRefix' -> do
+                              incRef childRefix' graph
+                              decRef childRefix graph
+                              writeIORef (tCons graph) tCons_'
+                              swallowOr graph parent $ IS.delete childIx myElems'' ~$~ childRefix'
+                            Nothing -> do
+                              writeIORef (tCons graph) (M.insert term' childRefix tCons_')
+                              setRef childRefix node{contents = term'} graph
+                              swallowOr graph parent $ \_ -> return myElems''
+            _ -> return (Just myElems'')
   where
     incRef = maybe incRefExternal incRefInternal parent
     decRef = maybe decRefExternal decRefInternal parent

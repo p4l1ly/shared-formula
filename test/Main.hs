@@ -270,7 +270,7 @@ main = sydTest $
       Formula.incRefExternal a graph
       a `shouldBe` Formula.RefIx 0
       Right b <- Formula.add (Leaf "b") graph
-      Formula.incRefExternal a graph
+      Formula.incRefExternal b graph
       b `shouldBe` Formula.RefIx 1
 
       Right na <- Formula.add (Not a) graph
@@ -289,7 +289,7 @@ main = sydTest $
       Formula.incRefExternal a graph
       a `shouldBe` Formula.RefIx 0
       Right b <- Formula.add (Leaf "b") graph
-      Formula.incRefExternal a graph
+      Formula.incRefExternal b graph
       b `shouldBe` Formula.RefIx 1
 
       Right na <- Formula.add (Not a) graph
@@ -307,3 +307,97 @@ main = sydTest $
       Left False <- Formula.add (And [andBNotA, a]) graph
       Left True <- Formula.add (Or [orBNotA, a]) graph
       return ()
+
+    it "law of common identities: a | (b & !a) = a | b" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+
+      Right na <- Formula.add (Not a) graph
+      na `shouldBe` Formula.RefIx 2
+
+      Right andBNotA <- Formula.add (And [b, na]) graph
+      andBNotA `shouldBe` Formula.RefIx 3
+
+      Right orAAndBNotA <- Formula.add (Or [a, andBNotA]) graph
+      orAAndBNotA `shouldBe` Formula.RefIx 3
+
+      rootContents <- Formula.contents <$> Formula.getRef orAAndBNotA graph
+      rootContents `shouldBe` Formula.IOr (IS.fromList [0, 1])
+
+    it "law of common identities: a | (b & c & !a) = a | (b & c)" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+      Right c <- Formula.add (Leaf "c") graph
+      c `shouldBe` Formula.RefIx 2
+
+      Right na <- Formula.add (Not a) graph
+      na `shouldBe` Formula.RefIx 3
+
+      Right andBCNotA <- Formula.add (And [b, c, na]) graph
+      andBCNotA `shouldBe` Formula.RefIx 4
+
+      Right orAAndBCNotA <- Formula.add (Or [a, andBCNotA]) graph
+      orAAndBCNotA `shouldBe` Formula.RefIx 3
+
+      rootContents <- Formula.contents <$> Formula.getRef orAAndBCNotA graph
+      rootContents `shouldBe` Formula.IOr (IS.fromList [0, 4])
+
+      andBCContents <- Formula.contents <$> Formula.getRef andBCNotA graph
+      andBCContents `shouldBe` Formula.IAnd (IS.fromList [1, 2])
+
+    it "law of common identities: a & (b | !a) = a & b" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+
+      Right na <- Formula.add (Not a) graph
+      na `shouldBe` Formula.RefIx 2
+
+      Right andBNotA <- Formula.add (Or [b, na]) graph
+      andBNotA `shouldBe` Formula.RefIx 3
+
+      Right orAOrBNotA <- Formula.add (And [a, andBNotA]) graph
+      orAOrBNotA `shouldBe` Formula.RefIx 3
+
+      rootContents <- Formula.contents <$> Formula.getRef orAOrBNotA graph
+      rootContents `shouldBe` Formula.IAnd (IS.fromList [0, 1])
+
+    it "law of common identities: a & (b | c | !a) = a & (b | c)" do
+      graph <- Formula.empty 1
+
+      Right a <- Formula.add (Leaf "a") graph
+      Formula.incRefExternal a graph
+      a `shouldBe` Formula.RefIx 0
+      Right b <- Formula.add (Leaf "b") graph
+      b `shouldBe` Formula.RefIx 1
+      Right c <- Formula.add (Leaf "c") graph
+      c `shouldBe` Formula.RefIx 2
+
+      Right na <- Formula.add (Not a) graph
+      na `shouldBe` Formula.RefIx 3
+
+      Right andBCNotA <- Formula.add (Or [b, c, na]) graph
+      andBCNotA `shouldBe` Formula.RefIx 4
+
+      Right orAOrBCNotA <- Formula.add (And [a, andBCNotA]) graph
+      orAOrBCNotA `shouldBe` Formula.RefIx 3
+
+      rootContents <- Formula.contents <$> Formula.getRef orAOrBCNotA graph
+      rootContents `shouldBe` Formula.IAnd (IS.fromList [0, 4])
+
+      andBCContents <- Formula.contents <$> Formula.getRef andBCNotA graph
+      andBCContents `shouldBe` Formula.IOr (IS.fromList [1, 2])
