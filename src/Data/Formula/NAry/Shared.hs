@@ -173,15 +173,15 @@ changeChildsAnd refix childs' graph = do
       writeIORef (tCons graph) tCons_'
       notifyParents refix (Evaluated False) graph
     Just childs' ->
-      case intSetDumbSize childs' of
-        Zero -> do
+      case sizeUpTo 2 childs' of
+        0 -> do
           writeIORef (tCons graph) tCons_'
           notifyParents refix (Evaluated True) graph
-        One -> do
+        1 -> do
           writeIORef (tCons graph) tCons_'
           let refix' = RefIx $ head $ IS.toList childs'
           notifyParents refix (Redirected refix') graph
-        Many -> do
+        _ -> do
           let term' = IAnd childs'
           case M.lookup term' tCons_' of
             Just refix' -> do
@@ -202,15 +202,15 @@ changeChildsOr refix childs' graph = do
       writeIORef (tCons graph) tCons_'
       notifyParents refix (Evaluated True) graph
     Just childs' ->
-      case intSetDumbSize childs' of
-        Zero -> do
+      case sizeUpTo 2 childs' of
+        0 -> do
           writeIORef (tCons graph) tCons_'
           notifyParents refix (Evaluated False) graph
-        One -> do
+        1 -> do
           writeIORef (tCons graph) tCons_'
           let refix' = RefIx $ head $ IS.toList childs'
           notifyParents refix (Redirected refix') graph
-        Many -> do
+        _ -> do
           let term' = IOr childs'
           case M.lookup term' tCons_' of
             Just refix' -> do
@@ -275,7 +275,7 @@ onChildChange parentRefix childRefix@(RefIx childIx) change graph = case change 
       IOr parentChilds
         | b -> notifyParents parentRefix (Evaluated True) graph
         | otherwise ->
-          changeChildsOr parentRefix (Just $ IS.delete childIx parentChilds) graph
+            changeChildsOr parentRefix (Just $ IS.delete childIx parentChilds) graph
       ILeaf t -> error "ILeaf: onChildChange"
   Redirected childRefix' -> do
     incRefInternal parentRefix childRefix' graph
@@ -359,15 +359,8 @@ itermFoldM b (IOr xs) step = intSetFoldM b xs step
 itermFoldM b (INot x) step = step b x
 itermFoldM b (ILeaf x) step = pure b
 
-data DumbCount = Zero | One | Many deriving (Show, Eq, Ord)
-
-dumbInc :: DumbCount -> DumbCount
-dumbInc Zero = One
-dumbInc One = Many
-dumbInc Many = Many
-
-intSetDumbSize :: IS.IntSet -> DumbCount
-intSetDumbSize = IS.fold (const dumbInc) Zero -- TODO it's probably still O(n) but O(1) should be somehow possible
+sizeUpTo :: Int -> IS.IntSet -> Int
+sizeUpTo max xs = IS.fold (\_ fn z -> if z == max then max else fn (z + 1)) id xs 0
 
 swallowAnd ::
   Hashable t =>
@@ -379,15 +372,15 @@ swallowAnd graph parent extFold = do
   -- Flattening
   let rec uniqXs refix@(RefIx x)
         | IS.member x uniqXs = do
-          decRef refix graph
-          return uniqXs
+            decRef refix graph
+            return uniqXs
         | otherwise = do
-          getRef refix graph >>= \case
-            CountedRef{contents = IAnd childXs, parentCount = 1} -> do
-              forIntSet_ childXs (`incRef` graph)
-              decRef refix graph
-              intSetFoldM uniqXs childXs rec
-            _ -> return (IS.insert x uniqXs)
+            getRef refix graph >>= \case
+              CountedRef{contents = IAnd childXs, parentCount = 1} -> do
+                forIntSet_ childXs (`incRef` graph)
+                decRef refix graph
+                intSetFoldM uniqXs childXs rec
+              _ -> return (IS.insert x uniqXs)
   myElems <- extFold rec
 
   -- Absorption
@@ -395,8 +388,8 @@ swallowAnd graph parent extFold = do
     getRef refix graph >>= \case
       CountedRef{contents = IOr childXs}
         | IS.fold (\i r -> IS.member i myElems || r) False childXs -> do
-          decRef refix graph
-          return (IS.delete ix myElems')
+            decRef refix graph
+            return (IS.delete ix myElems')
       _ -> return myElems'
 
   -- Negation law: a AND NOT a = 0
@@ -442,16 +435,16 @@ swallowAnd graph parent extFold = do
                       decRef childRefix graph
                       swallowAnd graph parent $ \_ -> return $ IS.delete childIx myElems''
                     Just childIxs' ->
-                      case intSetDumbSize childIxs' of
-                        Zero -> do
+                      case sizeUpTo 2 childIxs' of
+                        0 -> do
                           forIntSet_ myElems'' (`decRef` graph)
                           return Nothing
-                        One -> do
+                        1 -> do
                           let theOneRefix = RefIx $ head $ IS.toList childIxs'
                           incRef theOneRefix graph
                           decRef childRefix graph
                           swallowAnd graph parent $ IS.delete childIx myElems'' ~$~ theOneRefix
-                        Many -> do
+                        _ -> do
                           tCons_ <- readIORef (tCons graph)
                           let tCons_' = M.delete (IOr childIxs) tCons_
                           let term' = IOr childIxs'
@@ -480,15 +473,15 @@ swallowOr graph parent extFold = do
   -- Flattening
   let rec uniqXs refix@(RefIx x)
         | IS.member x uniqXs = do
-          decRef refix graph
-          return uniqXs
+            decRef refix graph
+            return uniqXs
         | otherwise = do
-          getRef refix graph >>= \case
-            CountedRef{contents = IOr childXs, parentCount = 1} -> do
-              forIntSet_ childXs (`incRef` graph)
-              decRef refix graph
-              intSetFoldM uniqXs childXs rec
-            _ -> return (IS.insert x uniqXs)
+            getRef refix graph >>= \case
+              CountedRef{contents = IOr childXs, parentCount = 1} -> do
+                forIntSet_ childXs (`incRef` graph)
+                decRef refix graph
+                intSetFoldM uniqXs childXs rec
+              _ -> return (IS.insert x uniqXs)
   myElems <- extFold rec
 
   -- Absorption
@@ -496,8 +489,8 @@ swallowOr graph parent extFold = do
     getRef childRefix graph >>= \case
       CountedRef{contents = IAnd childXs}
         | IS.fold (\i r -> IS.member i myElems || r) False childXs -> do
-          decRef childRefix graph
-          return (IS.delete childIx myElems')
+            decRef childRefix graph
+            return (IS.delete childIx myElems')
       _ -> return myElems'
 
   -- Negation law: a OR NOT a = 1
@@ -543,16 +536,16 @@ swallowOr graph parent extFold = do
                       decRef childRefix graph
                       swallowOr graph parent $ \_ -> return $ IS.delete childIx myElems''
                     Just childIxs' ->
-                      case intSetDumbSize childIxs' of
-                        Zero -> do
+                      case sizeUpTo 2 childIxs' of
+                        0 -> do
                           forIntSet_ myElems'' (`decRef` graph)
                           return Nothing
-                        One -> do
+                        1 -> do
                           let theOneRefix = RefIx $ head $ IS.toList childIxs'
                           incRef theOneRefix graph
                           decRef childRefix graph
                           swallowOr graph parent $ IS.delete childIx myElems'' ~$~ theOneRefix
-                        Many -> do
+                        _ -> do
                           tCons_ <- readIORef (tCons graph)
                           let tCons_' = M.delete (IAnd childIxs) tCons_
                           let term' = IAnd childIxs'
@@ -591,19 +584,19 @@ simplifyNew (And xs) graph = do
   case xs' of
     Nothing -> return $ Result False
     Just xs' ->
-      case intSetDumbSize xs' of
-        Zero -> return $ Result True
-        One -> return $ Singleton (RefIx $ head $ IS.toList xs')
-        Many -> return $ Formula (IAnd xs')
+      case sizeUpTo 2 xs' of
+        0 -> return $ Result True
+        1 -> return $ Singleton (RefIx $ head $ IS.toList xs')
+        _ -> return $ Formula (IAnd xs')
 simplifyNew (Or xs) graph = do
   xs' <- swallowOr graph Nothing $ foldM -$ IS.empty -$ xs
   case xs' of
     Nothing -> return $ Result True
     Just xs' ->
-      return case intSetDumbSize xs' of
-        Zero -> Result False
-        One -> Singleton (RefIx $ head $ IS.toList xs')
-        Many -> Formula (IOr xs')
+      return case sizeUpTo 2 xs' of
+        0 -> Result False
+        1 -> Singleton (RefIx $ head $ IS.toList xs')
+        _ -> Formula (IOr xs')
 simplifyNew (Not refix) graph = do
   swallowNot graph Nothing refix <&> \case
     Just refix' -> Singleton refix'

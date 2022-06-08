@@ -22,7 +22,19 @@ maintainer:         pavol.vargovcik@gmail.com
 extra-source-files: CHANGELOG.md
 
 library
-    exposed-modules:  Data.Formula.NAry.Shared
+    exposed-modules:
+      Data.Formula.NAry.Shared
+      Data.SimplifiedFormula.Agent
+      Data.SimplifiedFormula.Agents.And
+      Data.SimplifiedFormula.Agents.Out
+      Data.SimplifiedFormula.Agents.Children
+      Data.SimplifiedFormula.Agents.Singleton
+
+    other-modules:
+      Data.SimplifiedFormula.Utils.IntSet
+      Data.SimplifiedFormula.Utils.IdMap
+      Data.SimplifiedFormula.Utils.HashSet
+      Data.SimplifiedFormula.Utils.Fold
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -38,6 +50,7 @@ library
       containers ^>=0.6.5.1,
       composition-extra ^>=2.0.0,
       between ^>=0.11.0.0,
+      lens ^>=5.1.1,
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -63,6 +76,7 @@ test-suite bench
     sydtest ^>=0.10.0.0,
     base >=4.15 && <5,
     containers,
+    unordered-containers,
     time ^>=1.9.3,
     deepseq,
     shared-formula,
