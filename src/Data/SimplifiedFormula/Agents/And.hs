@@ -11,6 +11,7 @@ import Control.Lens
 import qualified Data.HashMap.Strict as M
 import Data.IORef
 import qualified Data.SimplifiedFormula.Agents.Children as Children
+import qualified Data.SimplifiedFormula.Agents.Null as Null
 import qualified Data.SimplifiedFormula.Agents.Nullary as Nullary
 import qualified Data.SimplifiedFormula.Agents.Out as Out
 import qualified Data.SimplifiedFormula.Agents.Singleton as Singleton
@@ -18,11 +19,12 @@ import qualified Data.SimplifiedFormula.Agents.Singleton as Singleton
 data StaticChildrenPendings = StaticChildrenPendings
   { _pendingSingleton :: !(Maybe Children.Message)
   , _pendingNullary :: !(Maybe Children.Message)
+  , _pendingNull :: !(Maybe Children.Message)
   }
 makeLenses ''StaticChildrenPendings
 
 emptyStaticChildrenPendings :: StaticChildrenPendings
-emptyStaticChildrenPendings = StaticChildrenPendings Nothing Nothing
+emptyStaticChildrenPendings = StaticChildrenPendings Nothing Nothing Nothing
 
 addStaticChildrenMessage ::
   Children.Message -> StaticChildrenPendings -> StaticChildrenPendings
@@ -30,6 +32,7 @@ addStaticChildrenMessage msg StaticChildrenPendings{..} =
   StaticChildrenPendings
     { _pendingSingleton = Just $ maybe msg (<> msg) _pendingSingleton
     , _pendingNullary = Just $ maybe msg (<> msg) _pendingNullary
+    , _pendingNull = Just $ maybe msg (<> msg) _pendingNull
     }
 
 data Triggerer = Triggerer
@@ -58,13 +61,16 @@ handleStaticChildrenPendings
       handleOne pendingNullary pendingNullary \msg ->
         Nullary.trigger msg $
           Out.triggerListeners (Out.Eval True) outTrig
+
+      handleOne pendingNull pendingNull \msg ->
+        Null.trigger False msg $
+          Out.triggerListeners (Out.Eval False) outTrig
     where
       handleOne lensG lensS handler = do
         scp <- readIORef staticChildrenPendings
         ($ scp ^. lensG) $ maybe (return ()) \msg -> do
           writeIORef staticChildrenPendings (set lensS Nothing scp)
-          Singleton.trigger msg \out' ->
-            Out.triggerListeners (Out.Redirect out') outTrig
+          handler msg
 
 new :: [Out.Self] -> Out.Triggerer -> IO (Maybe Self)
 new childs outTrig = do
@@ -80,4 +86,10 @@ state :: Self -> IO (Maybe Out.Message)
 state Self{..} = do
   Nullary.state children >>= \case
     True -> return $ Just $ Out.Eval True
-    False -> Singleton.state children <&> fmap Out.Redirect
+    False ->
+      Singleton.state children >>= \case
+        Just out -> return $ Just (Out.Redirect out)
+        Nothing ->
+          Null.state False children >>= \case
+            True -> return $ Just $ Out.Eval False
+            False -> return Nothing

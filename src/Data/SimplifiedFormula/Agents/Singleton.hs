@@ -11,7 +11,7 @@ type Message = Out.Self
 type Listener = Message -> IO ()
 
 trigger :: Children.Message -> Listener -> IO ()
-trigger (Children.newState -> newState) listener = do
+trigger (Children.newState -> newState) listener =
   case S.sizeUpTo 2 newState of
     1 -> listener (S.peak newState)
     _ -> return ()

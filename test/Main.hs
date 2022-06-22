@@ -5,13 +5,18 @@ module Main (main) where
 import Control.Monad
 import Data.Formula.NAry.Shared (Term (..))
 import qualified Data.Formula.NAry.Shared as Formula
+import Data.Function.Apply
+import qualified Data.HashSet as S
 import Data.IORef
 import qualified Data.IntSet as IS
 import Data.List
+import qualified Data.SimplifiedFormula.Agents.And as AndAgent
+import qualified Data.SimplifiedFormula.Agents.Children as Children
+import qualified Data.SimplifiedFormula.Agents.Out as Out
 import Test.Syd
 
 main :: IO ()
-main = sydTest $
+main = sydTest $ do
   describe "simplify" do
     it "removes double negation" do
       graph <- Formula.empty 1
@@ -401,3 +406,93 @@ main = sydTest $
 
       andBCContents <- Formula.contents <$> Formula.getRef andBCNotA graph
       andBCContents `shouldBe` Formula.IOr (IS.fromList [1, 2])
+
+  describe "AndAgent" do
+    it "builds" do
+      env <- Out.newEnv
+      aMsg <- newIORef Nothing
+      bMsg <- newIORef Nothing
+      aTrig <- Out.newTriggerer
+      bTrig <- Out.newTriggerer
+      a <- Out.new aTrig (Out.Leaf aMsg) env
+      b <- Out.new bTrig (Out.Leaf bMsg) env
+      a == b `shouldBe` False
+
+      outTrig <- Out.newTriggerer
+      Just andAB <- AndAgent.new [a, b, b] outTrig
+      Nothing <- AndAgent.state andAB
+      childs <- Children.state (AndAgent.children andAB)
+      childs == S.fromList [a, b] `shouldBe` True
+
+    it "redirects to 'a' if 'b' is True" do
+      env <- Out.newEnv
+      aMsg <- newIORef Nothing
+      bMsg <- newIORef (Just $ Out.Eval True)
+      aTrig <- Out.newTriggerer
+      bTrig <- Out.newTriggerer
+      a <- Out.new aTrig (Out.Leaf aMsg) env
+      b <- Out.new bTrig (Out.Leaf bMsg) env
+
+      outTrig <- Out.newTriggerer
+      Just andAB <- AndAgent.new [a, b] outTrig
+      Just (Out.Redirect a') <- AndAgent.state andAB
+      a == a' `shouldBe` True
+
+    it "evaluates if 'b' is False" do
+      env <- Out.newEnv
+      aMsg <- newIORef Nothing
+      bMsg <- newIORef (Just $ Out.Eval False)
+      aTrig <- Out.newTriggerer
+      bTrig <- Out.newTriggerer
+      a <- Out.new aTrig (Out.Leaf aMsg) env
+      b <- Out.new bTrig (Out.Leaf bMsg) env
+
+      outTrig <- Out.newTriggerer
+      Nothing <- AndAgent.new [a, b] outTrig
+      return ()
+
+    it "leaves trigger redirection, then evaluation" do
+      env <- Out.newEnv
+      aMsg <- newIORef Nothing
+      bMsg <- newIORef Nothing
+      cMsg <- newIORef Nothing
+      aTrig <- Out.newTriggerer
+      bTrig <- Out.newTriggerer
+      cTrig <- Out.newTriggerer
+      a <- Out.new aTrig (Out.Leaf aMsg) env
+      b <- Out.new bTrig (Out.Leaf bMsg) env
+      c <- Out.new cTrig (Out.Leaf cMsg) env
+
+      andABTrig <- Out.newTriggerer
+      andABMsg <- newIORef Nothing
+      Out.addListener -$ andABTrig $ \_ msg -> writeIORef andABMsg $ Just msg
+      Just andAB <- AndAgent.new [a, b] andABTrig
+      andABOut <- Out.new andABTrig (Out.And andAB) env
+
+      andCAndABTrig <- Out.newTriggerer
+      andCAndABMsg <- newIORef Nothing
+      Out.addListener -$ andCAndABTrig $ \_ msg -> writeIORef andCAndABMsg $ Just msg
+      Just andCAndAB <- AndAgent.new [andABOut, c] andCAndABTrig
+
+      Nothing <- AndAgent.state andAB
+      Nothing <- AndAgent.state andCAndAB
+      Nothing <- readIORef andABMsg
+      Nothing <- readIORef andCAndABMsg
+
+      writeIORef bMsg (Just $ Out.Eval True)
+      Out.triggerListeners (Out.Eval True) bTrig
+
+      Just (Out.Redirect a') <- AndAgent.state andAB
+      a == a' `shouldBe` True
+      Just (Out.Redirect a') <- readIORef andABMsg
+      a == a' `shouldBe` True
+      Nothing <- AndAgent.state andCAndAB
+      Nothing <- readIORef andCAndABMsg
+      childs <- Children.state (AndAgent.children andCAndAB)
+      childs == S.fromList [a, c] `shouldBe` True
+
+      writeIORef cMsg (Just $ Out.Eval False)
+      Out.triggerListeners (Out.Eval False) cTrig
+
+      Just (Out.Eval False) <- readIORef andCAndABMsg
+      return ()

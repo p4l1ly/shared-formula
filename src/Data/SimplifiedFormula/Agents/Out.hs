@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Data.SimplifiedFormula.Agents.Out where
 
@@ -12,10 +13,20 @@ import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.And as AndAgent
 import Data.SimplifiedFormula.Utils.Fold
 import qualified Data.SimplifiedFormula.Utils.IdMap as IdMap
 
-newtype Node
+data Node
   = And AndAgent.Self
+  | Leaf (IORef (Maybe Message))
 
 newtype Env = Env (IORef Integer)
+
+newEnv :: IO Env
+newEnv = Env <$> newIORef 0
+
+new :: Triggerer -> Node -> Env -> IO Self
+new triggerer implementation (Env env) = do
+  outId <- readIORef env
+  writeIORef env (outId + 1)
+  return Self{..}
 
 data Self = Self
   { implementation :: Node
@@ -47,6 +58,12 @@ data Triggerer = Triggerer
   , pendings :: Pendings
   }
 
+newTriggerer :: IO Triggerer
+newTriggerer = do
+  listeners <- newIORef IdMap.empty
+  pendings <- newIORef M.empty
+  return Triggerer{..}
+
 type Listener = Message -> IO ()
 type Listeners = IORef (IdMap.IdMap Self Listener)
 type Pendings = IORef (M.HashMap (IdMap.Key Self) Message)
@@ -68,6 +85,7 @@ handlePendings Triggerer{..} = rec
       pendings_ <- readIORef pendings
       case foldToPeak (M.foldrWithKey' . curry) pendings_ of
         Just (key, val) -> do
+          writeIORef pendings (M.delete key pendings_)
           listeners_ <- readIORef listeners
           IdMap.get key listeners_ val
           rec
@@ -81,8 +99,9 @@ addListener listener Triggerer{listeners} = do
 
 removeListener :: IdMap.Key Self -> Self -> IO ()
 removeListener key Self{triggerer = Triggerer{..}} = do
-  -- TODO notify and deallocate implementation: singleParent
+  -- TODO notify and deallocate implementation, singleParent
   modifyIORef' listeners (IdMap.remove key)
 
 state :: Self -> IO (Maybe Message)
 state Self{implementation = And andAgent} = AndAgent.state andAgent
+state Self{implementation = Leaf msg} = readIORef msg

@@ -29,6 +29,8 @@ library
       Data.SimplifiedFormula.Agents.Out
       Data.SimplifiedFormula.Agents.Children
       Data.SimplifiedFormula.Agents.Singleton
+      Data.SimplifiedFormula.Agents.Nullary
+      Data.SimplifiedFormula.Agents.Null
 
     other-modules:
       Data.SimplifiedFormula.Utils.IntSet
@@ -64,6 +66,8 @@ test-suite test
     sydtest ^>=0.10.0.0,
     base,
     containers,
+    unordered-containers,
+    composition-extra,
     shared-formula,
 
 test-suite bench

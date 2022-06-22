@@ -129,6 +129,7 @@ handlePendings listeners pendings = rec
       pendings_ <- readIORef pendings
       case foldToPeak (M.foldrWithKey' . curry) pendings_ of
         Just (key, val) -> do
+          writeIORef pendings (M.delete key pendings_)
           listeners_ <- readIORef listeners
           IdMap.get key listeners_ val
           rec
