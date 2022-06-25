@@ -76,9 +76,9 @@ new :: [Out.Self] -> Out.Triggerer -> IO (Maybe Self)
 new childs outTrig = do
   staticChildrenPendings <- newIORef emptyStaticChildrenPendings
   let triggerer = Triggerer{..}
-  (children, (hasFalse, _)) <-
+  (children, addChildResults) <-
     Children.new childs (triggerFromChildren triggerer outTrig)
-  if hasFalse
+  if any (\case Children.Eval False -> True; _ -> False) addChildResults
     then return Nothing
     else return $ Just Self{..}
 
@@ -93,3 +93,8 @@ state Self{..} = do
           Null.state False children >>= \case
             True -> return $ Just $ Out.Eval False
             False -> return Nothing
+
+onDecRef :: Self -> Int -> IO ()
+onDecRef Self{..} 0 = Children.free children
+onDecRef Self{..} 1 = return () -- TODO singleParent notifications
+onDecRef _ _ = return ()

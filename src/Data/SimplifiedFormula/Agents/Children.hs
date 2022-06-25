@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Data.SimplifiedFormula.Agents.Children where
@@ -11,6 +12,7 @@ import Data.Foldable
 import Data.Function.Apply
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet as S
+import Data.Hashable
 import Data.IORef
 import qualified Data.SimplifiedFormula.Agents.Out as Out
 import Data.SimplifiedFormula.Utils.Fold
@@ -40,65 +42,65 @@ data Self = Self
   { listener :: Listener
   , listeners :: Listeners
   , pendings :: Pendings
-  , childs :: IORef (S.HashSet Out.Self)
+  , childs :: IORef (M.HashMap Out.Self (IdMap.Key Out.Self))
   }
 
-new :: [Out.Self] -> Listener -> IO (Self, (Bool, Bool))
-new (S.fromList -> childs_) listener = do
+data AddChildResult = Added Out.Self | Present | Eval Bool
+
+keySet :: Hashable k => M.HashMap k v -> S.HashSet k
+keySet = S.fromList . M.keys
+
+new :: [Out.Self] -> Listener -> IO (Self, [AddChildResult])
+new childs_ listener = do
   listeners <- newIORef IdMap.empty
-  childs <- newIORef childs_
+  childs <- newIORef M.empty
   pendings <- newIORef M.empty
 
-  let onRemoveChild key child = do
-        childs_ <- readIORef childs
-        let childs_' = S.delete child childs_
-        writeIORef childs childs_'
-        triggerListeners listener listeners pendings $
-          Remove childs_ childs_' (S.singleton child)
-        Out.removeListener key child
-
-  let onRedirectChild key child child' = do
-        childs_ <- readIORef childs
-        let childs_' = S.insert child' $ S.delete child childs_
-        writeIORef childs childs_'
-        triggerListeners listener listeners pendings $
-          Replace childs_ childs_' (S.singleton child) (S.singleton child')
-        Out.removeListener key child
-
-  let addChildListener :: Out.Self -> IO (Maybe Out.Message)
-      addChildListener child = do
+  let addChild :: Out.Self -> IO AddChildResult
+      addChild child = do
         Out.state child >>= \case
           Just msg -> case msg of
-            Out.Eval _ -> return (Just msg)
-            Out.Redirect child' -> addChildListener child'
-          Nothing ->
-            Nothing <$ flip Out.addListener (Out.triggerer child) \key -> \case
-              Out.Eval _ -> onRemoveChild key child
-              Out.Redirect child' -> do
-                addChildListener child' >>= \case
-                  Nothing -> onRedirectChild key child child'
-                  Just msg -> case msg of
-                    Out.Eval _ -> onRemoveChild key child
-                    Out.Redirect child' -> onRedirectChild key child child'
+            Out.Eval b -> return (Eval b)
+            Out.Redirect child' -> addChild child'
+          Nothing -> do
+            childs_ <- readIORef childs
+            if child `M.member` childs_
+              then return Present
+              else do
+                key <- flip Out.addListener (Out.triggerer child) \key msg -> do
+                  childs_ <- readIORef childs
+                  let childs_' = M.delete child childs_
+                      childSet = keySet childs_
+                      childSet' = keySet childs_'
+                  writeIORef childs childs_'
+                  case msg of
+                    Out.Eval _ ->
+                      triggerListeners listener listeners pendings $
+                        Remove childSet childSet' (S.singleton child)
+                    Out.Redirect child' -> do
+                      addChild child' >>= \case
+                        Added child'' -> do
+                          childs_'' <- readIORef childs
+                          triggerListeners listener listeners pendings $
+                            Replace
+                              childSet
+                              (keySet childs_'')
+                              (S.singleton child)
+                              (S.singleton child'')
+                        Present ->
+                          triggerListeners listener listeners pendings $
+                            Remove childSet childSet' (S.singleton child)
+                        Eval _ ->
+                          triggerListeners listener listeners pendings $
+                            Remove childSet childSet' (S.singleton child)
+                  Out.removeListener key child
+                writeIORef childs (M.insert child key childs_)
+                return $ Added child
 
-  hasBools <- foldM -$ (False, False) -$ childs_ $
-    \hasBools@(hasFalse, hasTrue) child -> do
-      addChildListener child >>= \case
-        Nothing -> return hasBools
-        Just (Out.Eval False) -> do
-          modifyIORef childs (S.delete child)
-          return (True, hasTrue)
-        Just (Out.Eval True) -> do
-          modifyIORef childs (S.delete child)
-          return (hasFalse, True)
-        Just (Out.Redirect child') -> do
-          modifyIORef childs (S.insert child' . S.delete child)
-          return hasBools
-
-  return (Self{..}, hasBools)
+  (Self{..},) <$> mapM addChild childs_
 
 state :: Self -> IO State
-state Self{childs} = readIORef childs
+state Self{childs} = keySet <$> readIORef childs
 
 addListener :: Listener -> Self -> IO (IdMap.Key Self)
 addListener newListener Self{..} = do
@@ -107,7 +109,8 @@ addListener newListener Self{..} = do
   writeIORef listeners listeners_'
   return key
 
--- Children do not listen to anything => we really just remove the listener TODO no
+-- Children's parents are only weak references.
+-- We decref all children in `free` - after our master (Out) says.
 removeListener :: (IdMap.Key Self) -> Self -> IO ()
 removeListener key Self{..} = modifyIORef' listeners (IdMap.remove key)
 
@@ -134,3 +137,9 @@ handlePendings listeners pendings = rec
           IdMap.get key listeners_ val
           rec
         Nothing -> return ()
+
+free :: Self -> IO ()
+free Self{..} = do
+  childs_ <- readIORef childs
+  M.foldlWithKey -$ pure () -$ childs_ $ \rest child key ->
+    rest <* Out.removeListener key child

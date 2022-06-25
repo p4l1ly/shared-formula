@@ -465,13 +465,13 @@ main = sydTest $ do
 
       andABTrig <- Out.newTriggerer
       andABMsg <- newIORef Nothing
-      Out.addListener -$ andABTrig $ \_ msg -> writeIORef andABMsg $ Just msg
+      Out.addListener (\_ msg -> writeIORef andABMsg $ Just msg) andABTrig
       Just andAB <- AndAgent.new [a, b] andABTrig
       andABOut <- Out.new andABTrig (Out.And andAB) env
 
       andCAndABTrig <- Out.newTriggerer
       andCAndABMsg <- newIORef Nothing
-      Out.addListener -$ andCAndABTrig $ \_ msg -> writeIORef andCAndABMsg $ Just msg
+      Out.addListener (\_ msg -> writeIORef andCAndABMsg $ Just msg) andCAndABTrig
       Just andCAndAB <- AndAgent.new [andABOut, c] andCAndABTrig
 
       Nothing <- AndAgent.state andAB
@@ -496,3 +496,63 @@ main = sydTest $ do
 
       Just (Out.Eval False) <- readIORef andCAndABMsg
       return ()
+
+    it "decRefs" do
+      env <- Out.newEnv
+      aMsg <- newIORef Nothing
+      bMsg <- newIORef Nothing
+      cMsg <- newIORef Nothing
+      dMsg <- newIORef Nothing
+      aTrig <- Out.newTriggerer
+      bTrig <- Out.newTriggerer
+      cTrig <- Out.newTriggerer
+      dTrig <- Out.newTriggerer
+      a <- Out.new aTrig (Out.Leaf aMsg) env
+      b <- Out.new bTrig (Out.Leaf bMsg) env
+      c <- Out.new cTrig (Out.Leaf cMsg) env
+      d <- Out.new dTrig (Out.Leaf dMsg) env
+
+      -- a & b
+      andABTrig <- Out.newTriggerer
+      andABKey <- Out.addListener (\_ msg -> return ()) andABTrig
+      Just andAB <- AndAgent.new [a, b] andABTrig
+      andABOut <- Out.new andABTrig (Out.And andAB) env
+
+      -- c & d
+      andCDTrig <- Out.newTriggerer
+      Just andCD <- AndAgent.new [c, d] andCDTrig
+      andCDOut <- Out.new andCDTrig (Out.And andCD) env
+
+      -- (a & b) & (c & d)
+      andABCDTrig <- Out.newTriggerer
+      andABCDKey <- Out.addListener (\_ msg -> return ()) andABCDTrig
+      Just andABCD <- AndAgent.new [andABOut, andCDOut] andABCDTrig
+      andABCDOut <- Out.new andABCDTrig (Out.And andABCD) env
+
+      Out.parentCount aTrig >>= shouldBe 1
+      Out.parentCount bTrig >>= shouldBe 1
+      Out.parentCount cTrig >>= shouldBe 1
+      Out.parentCount dTrig >>= shouldBe 1
+      Out.parentCount andABTrig >>= shouldBe 2
+      Out.parentCount andCDTrig >>= shouldBe 1
+      Out.parentCount andABCDTrig >>= shouldBe 1
+
+      Out.removeListener andABCDKey andABCDOut
+
+      Out.parentCount aTrig >>= shouldBe 1
+      Out.parentCount bTrig >>= shouldBe 1
+      Out.parentCount cTrig >>= shouldBe 0
+      Out.parentCount dTrig >>= shouldBe 0
+      Out.parentCount andABTrig >>= shouldBe 1
+      Out.parentCount andCDTrig >>= shouldBe 0
+      Out.parentCount andABCDTrig >>= shouldBe 0
+
+      Out.removeListener andABKey andABOut
+
+      Out.parentCount aTrig >>= shouldBe 0
+      Out.parentCount bTrig >>= shouldBe 0
+      Out.parentCount cTrig >>= shouldBe 0
+      Out.parentCount dTrig >>= shouldBe 0
+      Out.parentCount andABTrig >>= shouldBe 0
+      Out.parentCount andCDTrig >>= shouldBe 0
+      Out.parentCount andABCDTrig >>= shouldBe 0

@@ -6,6 +6,7 @@
 
 module Data.SimplifiedFormula.Agents.Out where
 
+import Control.Monad
 import qualified Data.HashMap.Strict as M
 import Data.Hashable
 import Data.IORef
@@ -91,16 +92,27 @@ handlePendings Triggerer{..} = rec
           rec
         Nothing -> return ()
 
-addListener :: (IdMap.Key Self -> Listener) -> Triggerer -> IO ()
+addListener :: (IdMap.Key Self -> Listener) -> Triggerer -> IO (IdMap.Key Self)
 addListener listener Triggerer{listeners} = do
   listeners_ <- readIORef listeners
   let (key, listeners_') = IdMap.add (listener $ IdMap.next listeners_') listeners_
   writeIORef listeners listeners_'
+  return key
+
+parentCount :: Triggerer -> IO Int
+parentCount Triggerer{..} = do
+  listeners_ <- readIORef listeners
+  return $ foldToLimitedSize IdMap.foldElems 2 listeners_
 
 removeListener :: IdMap.Key Self -> Self -> IO ()
-removeListener key Self{triggerer = Triggerer{..}} = do
-  -- TODO notify and deallocate implementation, singleParent
-  modifyIORef' listeners (IdMap.remove key)
+removeListener key Self{triggerer = Triggerer{..}, implementation} = do
+  listeners_ <- readIORef listeners
+  let listeners_' = IdMap.remove key listeners_
+  writeIORef listeners listeners_'
+  let parentCount = foldToLimitedSize IdMap.foldElems 2 listeners_'
+  case implementation of
+    And andAgent -> AndAgent.onDecRef andAgent parentCount
+    Leaf _ -> return ()
 
 state :: Self -> IO (Maybe Message)
 state Self{implementation = And andAgent} = AndAgent.state andAgent
