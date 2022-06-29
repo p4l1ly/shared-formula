@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Data.SimplifiedFormula.Agents.Nullary where
 
@@ -7,12 +6,9 @@ import qualified Data.HashSet as S
 import qualified Data.SimplifiedFormula.Agents.Children as Children
 import qualified Data.SimplifiedFormula.Agents.Out as Out
 
-type Listener = IO ()
-
-trigger :: Children.Message -> Listener -> IO ()
-trigger (Children.newState -> childs) listener
-  | S.null childs = listener
-  | otherwise = return ()
+trigger :: Children.Message -> Bool
+trigger (Children.Remove _ childs _) = S.null childs
+trigger _ = False
 
 state :: Children.Self -> IO Bool
 state children = do

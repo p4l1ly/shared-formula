@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -7,10 +8,12 @@
 module Data.SimplifiedFormula.Agents.Out where
 
 import Control.Monad
+import Data.Functor
 import qualified Data.HashMap.Strict as M
 import Data.Hashable
 import Data.IORef
 import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.And as AndAgent
+import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.ShareSet as ShareSet
 import Data.SimplifiedFormula.Utils.Fold
 import qualified Data.SimplifiedFormula.Utils.IdMap as IdMap
 
@@ -18,15 +21,16 @@ data Node
   = And AndAgent.Self
   | Leaf (IORef (Maybe Message))
 
-newtype Env = Env (IORef Integer)
-
 newEnv :: IO Env
-newEnv = Env <$> newIORef 0
+newEnv = do
+  andShareEnv <- ShareSet.newEnv
+  nextId <- newIORef 0
+  return Env{..}
 
 new :: Triggerer -> Node -> Env -> IO Self
-new triggerer implementation (Env env) = do
-  outId <- readIORef env
-  writeIORef env (outId + 1)
+new triggerer implementation Env{nextId} = do
+  !outId <- readIORef nextId
+  writeIORef nextId (outId + 1)
   return Self{..}
 
 data Self = Self
@@ -34,6 +38,9 @@ data Self = Self
   , outId :: Integer
   , triggerer :: Triggerer
   }
+
+instance Show Self where
+  show Self{..} = '^' : show outId
 
 instance Eq Self where
   a == b = outId a == outId b
@@ -45,6 +52,7 @@ instance Hashable Self where
 data Message
   = Eval Bool
   | Redirect Self
+  deriving (Show)
 
 instance Semigroup Message where
   Eval b <> Redirect _ = Eval b
@@ -66,17 +74,18 @@ newTriggerer = do
   return Triggerer{..}
 
 type Listener = Message -> IO ()
-type Listeners = IORef (IdMap.IdMap Self Listener)
+type Listeners = IORef (IdMap.IdMap Self (IdMap.Key Self -> Listener))
 type Pendings = IORef (M.HashMap (IdMap.Key Self) Message)
 
 triggerListeners :: Message -> Triggerer -> IO ()
 triggerListeners msg triggerer@Triggerer{..} = do
   pendings_ <- readIORef pendings
   listeners_ <- readIORef listeners
-  writeIORef pendings $
-    M.mapWithKey
-      (\key _ -> maybe msg (<> msg) $ M.lookup key pendings_)
-      (IdMap.items listeners_)
+  let pendings_' =
+        M.mapWithKey
+          (\key _ -> maybe msg (<> msg) $ M.lookup key pendings_)
+          (IdMap.items listeners_)
+  writeIORef pendings pendings_'
   handlePendings triggerer
 
 handlePendings :: Triggerer -> IO ()
@@ -88,32 +97,40 @@ handlePendings Triggerer{..} = rec
         Just (key, val) -> do
           writeIORef pendings (M.delete key pendings_)
           listeners_ <- readIORef listeners
-          IdMap.get key listeners_ val
+          IdMap.get key listeners_ key val
           rec
         Nothing -> return ()
 
 addListener :: (IdMap.Key Self -> Listener) -> Triggerer -> IO (IdMap.Key Self)
 addListener listener Triggerer{listeners} = do
   listeners_ <- readIORef listeners
-  let (key, listeners_') = IdMap.add (listener $ IdMap.next listeners_') listeners_
+  let (key, listeners_') = IdMap.add listener listeners_
   writeIORef listeners listeners_'
   return key
 
 parentCount :: Triggerer -> IO Int
 parentCount Triggerer{..} = do
-  listeners_ <- readIORef listeners
-  return $ foldToLimitedSize IdMap.foldElems 2 listeners_
+  foldToLimitedSize IdMap.foldElems 2 <$> readIORef listeners
 
-removeListener :: IdMap.Key Self -> Self -> IO ()
-removeListener key Self{triggerer = Triggerer{..}, implementation} = do
+removeListener :: IdMap.Key Self -> Self -> Env -> IO ()
+removeListener key self@Self{triggerer = Triggerer{..}, implementation} env = do
   listeners_ <- readIORef listeners
   let listeners_' = IdMap.remove key listeners_
   writeIORef listeners listeners_'
+  modifyIORef' pendings (M.delete key)
   let parentCount = foldToLimitedSize IdMap.foldElems 2 listeners_'
   case implementation of
-    And andAgent -> AndAgent.onDecRef andAgent parentCount
+    And andAgent -> AndAgent.onDecRef andAgent parentCount env
     Leaf _ -> return ()
 
-state :: Self -> IO (Maybe Message)
-state Self{implementation = And andAgent} = AndAgent.state andAgent
-state Self{implementation = Leaf msg} = readIORef msg
+data Env = Env
+  { andShareEnv :: ShareSet.EnvRef
+  , nextId :: IORef Integer
+  }
+
+state :: Self -> Env -> IO (Maybe Message)
+state self@Self{implementation = And andAgent} env =
+  AndAgent.state andAgent env <&> \case
+    Just (Redirect out) | out == self -> Nothing
+    msg -> msg
+state Self{implementation = Leaf msg} _ = readIORef msg

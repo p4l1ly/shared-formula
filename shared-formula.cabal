@@ -31,6 +31,8 @@ library
       Data.SimplifiedFormula.Agents.Singleton
       Data.SimplifiedFormula.Agents.Nullary
       Data.SimplifiedFormula.Agents.Null
+      Data.SimplifiedFormula.Agents.ShareSet
+      Data.SimplifiedFormula.Agents.SingleParent
 
     other-modules:
       Data.SimplifiedFormula.Utils.IntSet
@@ -52,7 +54,6 @@ library
       containers ^>=0.6.5.1,
       composition-extra ^>=2.0.0,
       between ^>=0.11.0.0,
-      lens ^>=5.1.1,
     hs-source-dirs:   src
     default-language: Haskell2010
 

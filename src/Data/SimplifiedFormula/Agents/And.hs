@@ -7,32 +7,36 @@
 
 module Data.SimplifiedFormula.Agents.And where
 
-import Control.Lens
+import Data.Functor
 import qualified Data.HashMap.Strict as M
 import Data.IORef
 import qualified Data.SimplifiedFormula.Agents.Children as Children
 import qualified Data.SimplifiedFormula.Agents.Null as Null
 import qualified Data.SimplifiedFormula.Agents.Nullary as Nullary
 import qualified Data.SimplifiedFormula.Agents.Out as Out
+import qualified Data.SimplifiedFormula.Agents.ShareSet as ShareSet
+import qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
 import qualified Data.SimplifiedFormula.Agents.Singleton as Singleton
+import System.IO
 
 data StaticChildrenPendings = StaticChildrenPendings
-  { _pendingSingleton :: !(Maybe Children.Message)
-  , _pendingNullary :: !(Maybe Children.Message)
-  , _pendingNull :: !(Maybe Children.Message)
+  { pendingSingleton :: !(Maybe Children.Message)
+  , pendingNullary :: !(Maybe Children.Message)
+  , pendingNull :: !(Maybe Children.Message)
+  , pendingShare :: !(Maybe Children.Message)
   }
-makeLenses ''StaticChildrenPendings
 
 emptyStaticChildrenPendings :: StaticChildrenPendings
-emptyStaticChildrenPendings = StaticChildrenPendings Nothing Nothing Nothing
+emptyStaticChildrenPendings = StaticChildrenPendings Nothing Nothing Nothing Nothing
 
 addStaticChildrenMessage ::
   Children.Message -> StaticChildrenPendings -> StaticChildrenPendings
 addStaticChildrenMessage msg StaticChildrenPendings{..} =
   StaticChildrenPendings
-    { _pendingSingleton = Just $ maybe msg (<> msg) _pendingSingleton
-    , _pendingNullary = Just $ maybe msg (<> msg) _pendingNullary
-    , _pendingNull = Just $ maybe msg (<> msg) _pendingNull
+    { pendingSingleton = Just $ maybe msg (<> msg) pendingSingleton
+    , pendingNullary = Just $ maybe msg (<> msg) pendingNullary
+    , pendingNull = Just $ maybe msg (<> msg) pendingNull
+    , pendingShare = Just $ maybe msg (<> msg) pendingShare
     }
 
 data Triggerer = Triggerer
@@ -42,59 +46,82 @@ data Triggerer = Triggerer
 data Self = Self
   { triggerer :: !Triggerer
   , children :: !Children.Self
+  , singleParent :: !SingleParent.Self
   }
 
-triggerFromChildren :: Triggerer -> Out.Triggerer -> Children.Message -> IO ()
-triggerFromChildren trig@Triggerer{..} outTrig msg = do
+triggerFromChildren :: Triggerer -> Out.Triggerer -> Out.Env -> Children.Message -> IO ()
+triggerFromChildren trig@Triggerer{..} outTrig outEnv msg = do
   modifyIORef staticChildrenPendings (addStaticChildrenMessage msg)
-  handleStaticChildrenPendings trig outTrig
+  handleStaticChildrenPendings trig outTrig outEnv
 
-handleStaticChildrenPendings :: Triggerer -> Out.Triggerer -> IO ()
+handleStaticChildrenPendings :: Triggerer -> Out.Triggerer -> Out.Env -> IO ()
 handleStaticChildrenPendings
   trig@Triggerer{staticChildrenPendings}
-  outTrig =
-    do
-      handleOne pendingSingleton pendingSingleton \msg ->
-        Singleton.trigger msg \out' ->
-          Out.triggerListeners (Out.Redirect out') outTrig
-
-      handleOne pendingNullary pendingNullary \msg ->
-        Nullary.trigger msg $
-          Out.triggerListeners (Out.Eval True) outTrig
-
-      handleOne pendingNull pendingNull \msg ->
-        Null.trigger False msg $
-          Out.triggerListeners (Out.Eval False) outTrig
+  outTrig
+  outEnv =
+    outMsg >>= \case
+      Nothing -> return ()
+      Just msg -> Out.triggerListeners msg outTrig
     where
-      handleOne lensG lensS handler = do
+      handleOne get clear handler = do
         scp <- readIORef staticChildrenPendings
-        ($ scp ^. lensG) $ maybe (return ()) \msg -> do
-          writeIORef staticChildrenPendings (set lensS Nothing scp)
+        ($ get scp) $ maybe (return Nothing) \msg -> do
+          writeIORef staticChildrenPendings (clear scp)
           handler msg
+      outMsg = mconcat <$> sequence agentHandlers
+      agentHandlers =
+        [ handleOne pendingSingleton (\x -> x{pendingSingleton = Nothing}) \msg ->
+            return $ Singleton.trigger msg <&> Out.Redirect
+        , handleOne pendingNullary (\x -> x{pendingNullary = Nothing}) \msg ->
+            return $ if Nullary.trigger msg then (Just $ Out.Eval True) else Nothing
+        , handleOne pendingNull (\x -> x{pendingNull = Nothing}) \msg ->
+            Null.trigger False msg outEnv <&> \case
+              True -> Just $ Out.Eval False
+              False -> Nothing
+        , handleOne pendingShare (\x -> x{pendingShare = Nothing}) \msg ->
+            ShareSet.trigger msg (Out.andShareEnv outEnv) <&> fmap Out.Redirect
+        ]
 
-new :: [Out.Self] -> Out.Triggerer -> IO (Maybe Self)
-new childs outTrig = do
+new :: [Out.Self] -> Out.Triggerer -> Out.Env -> IO (Maybe Self)
+new childs outTrig outEnv = do
   staticChildrenPendings <- newIORef emptyStaticChildrenPendings
   let triggerer = Triggerer{..}
-  (children, addChildResults) <-
-    Children.new childs (triggerFromChildren triggerer outTrig)
-  if any (\case Children.Eval False -> True; _ -> False) addChildResults
-    then return Nothing
-    else return $ Just Self{..}
+  children <- Children.new
+  hFlush stdout
+  let childrenListener = triggerFromChildren triggerer outTrig outEnv
+  let process [] = do
+        singleParent <- SingleParent.new
+        return $ Just Self{..}
+      process (child : childs') = do
+        Children.addChild children outEnv child >>= \case
+          Children.Present -> process childs'
+          Children.Eval True -> process childs'
+          Children.Eval False -> Nothing <$ Children.free children outEnv
+          Children.Added child' -> do
+            Children.confirmAddChild children outEnv childrenListener child'
+            process childs'
+  process childs
 
-state :: Self -> IO (Maybe Out.Message)
-state Self{..} = do
+state :: Self -> Out.Env -> IO (Maybe Out.Message)
+state Self{..} outEnv = do
   Nullary.state children >>= \case
     True -> return $ Just $ Out.Eval True
     False ->
       Singleton.state children >>= \case
         Just out -> return $ Just (Out.Redirect out)
         Nothing ->
-          Null.state False children >>= \case
+          Null.state False children outEnv >>= \case
             True -> return $ Just $ Out.Eval False
-            False -> return Nothing
+            False ->
+              ShareSet.state children (Out.andShareEnv outEnv) >>= \case
+                Just out -> return $ Just (Out.Redirect out)
+                Nothing -> return Nothing
 
-onDecRef :: Self -> Int -> IO ()
-onDecRef Self{..} 0 = Children.free children
-onDecRef Self{..} 1 = return () -- TODO singleParent notifications
-onDecRef _ _ = return ()
+onDecRef :: Self -> Int -> Out.Env -> IO ()
+onDecRef Self{..} 0 outEnv = do
+  -- WARN: Free ShareSet only after handling the Children's message.
+  -- It relies on having the fresh children state hashed.
+  ShareSet.free children (Out.andShareEnv outEnv)
+  Children.free children outEnv
+onDecRef Self{..} 1 outEnv = SingleParent.triggerListeners singleParent
+onDecRef _ _ _ = return ()

@@ -18,6 +18,7 @@ data IdMap tag elem = IdMap
   { next :: !(Key tag)
   , items :: !(M.HashMap (Key tag) elem)
   }
+  deriving (Show)
 
 empty :: IdMap tag elem
 empty = IdMap (Key 0) M.empty
