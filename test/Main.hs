@@ -527,17 +527,20 @@ main = sydTest $ do
       andABKey <- Out.addListener (\_ msg -> return ()) andABTrig
       Just andAB <- AndAgent.new [a, b] andABTrig env
       andABOut <- Out.new andABTrig (Out.And andAB) env
+      ShareSet.add (AndAgent.children andAB) andABOut (Out.andShareEnv env)
 
       -- c & d
       andCDTrig <- Out.newTriggerer
       Just andCD <- AndAgent.new [c, d] andCDTrig env
       andCDOut <- Out.new andCDTrig (Out.And andCD) env
+      ShareSet.add (AndAgent.children andCD) andCDOut (Out.andShareEnv env)
 
       -- (a & b) & (c & d)
       andABCDTrig <- Out.newTriggerer
       andABCDKey <- Out.addListener (\_ msg -> return ()) andABCDTrig
       Just andABCD <- AndAgent.new [andABOut, andCDOut] andABCDTrig env
       andABCDOut <- Out.new andABCDTrig (Out.And andABCD) env
+      ShareSet.add (AndAgent.children andABCD) andABCDOut (Out.andShareEnv env)
 
       Out.parentCount aTrig >>= shouldBe 1
       Out.parentCount bTrig >>= shouldBe 1

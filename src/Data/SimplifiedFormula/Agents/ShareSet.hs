@@ -33,9 +33,10 @@ free :: Children.Self -> EnvRef -> IO ()
 free children (EnvRef envRef) = do
   env <- readIORef envRef
   childs <- Children.state children
-  let (out, env') = M.alterF -$ childs -$ env $ \case
-        Nothing -> error "ShareSet: change without old value"
-        Just out -> (out, Nothing)
+  -- alterF can be changed to alter but this is convenient for error strictness
+  env' <- M.alterF -$ childs -$ env $ \case
+    Nothing -> error "ShareSet: change without old value"
+    Just out -> return Nothing
   writeIORef envRef env'
 
 trigger :: Children.Message -> EnvRef -> IO (Maybe Out.Self)

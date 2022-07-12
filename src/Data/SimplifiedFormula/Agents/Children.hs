@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -82,7 +83,7 @@ confirmAddChild self@Self{..} outEnv listener child = do
   childs_ <- readIORef childs
   key <- flip Out.addListener (Out.triggerer child) \key msg -> do
     childs_ <- readIORef childs
-    let childs_' = M.delete child childs_
+    let !childs_' = M.delete child childs_
         childSet = keySet childs_
         childSet' = keySet childs_'
     writeIORef childs childs_'

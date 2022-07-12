@@ -19,76 +19,34 @@ import qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
 import qualified Data.SimplifiedFormula.Agents.Singleton as Singleton
 import System.IO
 
-data StaticChildrenPendings = StaticChildrenPendings
-  { pendingSingleton :: !(Maybe Children.Message)
-  , pendingNullary :: !(Maybe Children.Message)
-  , pendingNull :: !(Maybe Children.Message)
-  , pendingShare :: !(Maybe Children.Message)
-  }
-
-emptyStaticChildrenPendings :: StaticChildrenPendings
-emptyStaticChildrenPendings = StaticChildrenPendings Nothing Nothing Nothing Nothing
-
-addStaticChildrenMessage ::
-  Children.Message -> StaticChildrenPendings -> StaticChildrenPendings
-addStaticChildrenMessage msg StaticChildrenPendings{..} =
-  StaticChildrenPendings
-    { pendingSingleton = Just $ maybe msg (<> msg) pendingSingleton
-    , pendingNullary = Just $ maybe msg (<> msg) pendingNullary
-    , pendingNull = Just $ maybe msg (<> msg) pendingNull
-    , pendingShare = Just $ maybe msg (<> msg) pendingShare
-    }
-
-data Triggerer = Triggerer
-  { staticChildrenPendings :: IORef StaticChildrenPendings
-  }
-
 data Self = Self
-  { triggerer :: !Triggerer
-  , children :: !Children.Self
+  { children :: !Children.Self
   , singleParent :: !SingleParent.Self
   }
 
-triggerFromChildren :: Triggerer -> Out.Triggerer -> Out.Env -> Children.Message -> IO ()
-triggerFromChildren trig@Triggerer{..} outTrig outEnv msg = do
-  modifyIORef staticChildrenPendings (addStaticChildrenMessage msg)
-  handleStaticChildrenPendings trig outTrig outEnv
-
-handleStaticChildrenPendings :: Triggerer -> Out.Triggerer -> Out.Env -> IO ()
-handleStaticChildrenPendings
-  trig@Triggerer{staticChildrenPendings}
-  outTrig
-  outEnv =
-    outMsg >>= \case
-      Nothing -> return ()
-      Just msg -> Out.triggerListeners msg outTrig
-    where
-      handleOne get clear handler = do
-        scp <- readIORef staticChildrenPendings
-        ($ get scp) $ maybe (return Nothing) \msg -> do
-          writeIORef staticChildrenPendings (clear scp)
-          handler msg
-      outMsg = mconcat <$> sequence agentHandlers
-      agentHandlers =
-        [ handleOne pendingSingleton (\x -> x{pendingSingleton = Nothing}) \msg ->
-            return $ Singleton.trigger msg <&> Out.Redirect
-        , handleOne pendingNullary (\x -> x{pendingNullary = Nothing}) \msg ->
-            return $ if Nullary.trigger msg then (Just $ Out.Eval True) else Nothing
-        , handleOne pendingNull (\x -> x{pendingNull = Nothing}) \msg ->
-            Null.trigger False msg outEnv <&> \case
-              True -> Just $ Out.Eval False
-              False -> Nothing
-        , handleOne pendingShare (\x -> x{pendingShare = Nothing}) \msg ->
-            ShareSet.trigger msg (Out.andShareEnv outEnv) <&> fmap Out.Redirect
-        ]
+triggerFromChildren :: Out.Triggerer -> Out.Env -> Children.Message -> IO ()
+triggerFromChildren outTrig outEnv msg = do
+  outMsg >>= \case
+    Nothing -> return ()
+    Just msg -> Out.triggerListeners msg outTrig
+  where
+    outMsg :: IO (Maybe Out.Message)
+    outMsg = do
+      shareMsg <- ShareSet.trigger msg (Out.andShareEnv outEnv) <&> fmap Out.Redirect
+      Null.trigger False msg outEnv >>= \case
+        True -> return $ Just $ Out.Eval False
+        False
+          | Nullary.trigger msg -> return $ Just $ Out.Eval True
+          | otherwise ->
+              case Singleton.trigger msg of
+                Just out' -> return $ Just $ Out.Redirect out'
+                Nothing -> return shareMsg
 
 new :: [Out.Self] -> Out.Triggerer -> Out.Env -> IO (Maybe Self)
 new childs outTrig outEnv = do
-  staticChildrenPendings <- newIORef emptyStaticChildrenPendings
-  let triggerer = Triggerer{..}
   children <- Children.new
   hFlush stdout
-  let childrenListener = triggerFromChildren triggerer outTrig outEnv
+  let childrenListener = triggerFromChildren outTrig outEnv
   let process [] = do
         singleParent <- SingleParent.new
         return $ Just Self{..}
