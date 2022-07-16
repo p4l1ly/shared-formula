@@ -7,9 +7,8 @@
 
 module Data.SimplifiedFormula.Agents.And where
 
-import Data.Functor
 import qualified Data.HashMap.Strict as M
-import Data.IORef
+import qualified Data.HashSet as S
 import qualified Data.SimplifiedFormula.Agents.Children as Children
 import qualified Data.SimplifiedFormula.Agents.Null as Null
 import qualified Data.SimplifiedFormula.Agents.Nullary as Nullary
@@ -17,48 +16,49 @@ import qualified Data.SimplifiedFormula.Agents.Out as Out
 import qualified Data.SimplifiedFormula.Agents.ShareSet as ShareSet
 import qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
 import qualified Data.SimplifiedFormula.Agents.Singleton as Singleton
-import System.IO
+import qualified Data.SimplifiedFormula.Agents.Swallow as Swallow
 
 data Self = Self
   { children :: !Children.Self
   , singleParent :: !SingleParent.Self
   }
 
-triggerFromChildren :: Out.Triggerer -> Out.Env -> Children.Message -> IO ()
-triggerFromChildren outTrig outEnv msg = do
-  outMsg >>= \case
-    Nothing -> return ()
-    Just msg -> Out.triggerListeners msg outTrig
-  where
-    outMsg :: IO (Maybe Out.Message)
-    outMsg = do
-      shareMsg <- ShareSet.trigger msg (Out.andShareEnv outEnv) <&> fmap Out.Redirect
-      Null.trigger False msg outEnv >>= \case
-        True -> return $ Just $ Out.Eval False
-        False
-          | Nullary.trigger msg -> return $ Just $ Out.Eval True
-          | otherwise ->
-              case Singleton.trigger msg of
-                Just out' -> return $ Just $ Out.Redirect out'
-                Nothing -> return shareMsg
+triggerFromChildren ::
+  Out.Triggerer -> Out.Env -> Children.Self -> Children.Message -> IO ()
+triggerFromChildren outTrig outEnv children msg = do
+  Null.trigger False msg outEnv >>= \case
+    True -> Out.triggerListeners (Out.Eval False) outTrig
+    False
+      | Nullary.trigger msg -> Out.triggerListeners (Out.Eval True) outTrig
+      | otherwise ->
+          case Singleton.trigger msg of
+            Just out' -> Out.triggerListeners (Out.Redirect out') outTrig
+            Nothing -> do
+              ShareSet.trigger msg (Out.andShareEnv outEnv) >>= \case
+                Just out' -> Out.triggerListeners (Out.Redirect out') outTrig
+                Nothing -> do
+                  Children.apply
+                    children
+                    outEnv
+                    (triggerFromChildren outTrig outEnv children)
+                    msg
+                  Children.triggerListeners children outEnv msg
 
 new :: [Out.Self] -> Out.Triggerer -> Out.Env -> IO (Maybe Self)
 new childs outTrig outEnv = do
   children <- Children.new
-  hFlush stdout
-  let childrenListener = triggerFromChildren outTrig outEnv
-  let process [] = do
+  let childrenListener = triggerFromChildren outTrig outEnv children
+  let process [] msg = do
         singleParent <- SingleParent.new
+        Children.apply children outEnv childrenListener msg
         return $ Just Self{..}
-      process (child : childs') = do
-        Children.addChild children outEnv child >>= \case
-          Children.Present -> process childs'
-          Children.Eval True -> process childs'
+      process (child : childs') msg = do
+        Children.addChild outEnv child msg >>= \case
+          Children.Present -> process childs' msg
+          Children.Eval True -> process childs' msg
           Children.Eval False -> Nothing <$ Children.free children outEnv
-          Children.Added child' -> do
-            Children.confirmAddChild children outEnv childrenListener child'
-            process childs'
-  process childs
+          Children.Added child' msg' -> process childs' msg'
+  process childs (Children.Init S.empty)
 
 state :: Self -> Out.Env -> IO (Maybe Out.Message)
 state Self{..} outEnv = do
@@ -66,13 +66,13 @@ state Self{..} outEnv = do
     True -> return $ Just $ Out.Eval True
     False ->
       Singleton.state children >>= \case
-        Just out -> return $ Just (Out.Redirect out)
+        Just out -> return $ Just $ Out.Redirect out
         Nothing ->
           Null.state False children outEnv >>= \case
             True -> return $ Just $ Out.Eval False
             False ->
               ShareSet.state children (Out.andShareEnv outEnv) >>= \case
-                Just out -> return $ Just (Out.Redirect out)
+                Just out -> return $ Just $ Out.Redirect out
                 Nothing -> return Nothing
 
 onDecRef :: Self -> Int -> Out.Env -> IO ()

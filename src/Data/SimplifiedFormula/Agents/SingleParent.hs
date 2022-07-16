@@ -21,8 +21,8 @@ type Pendings = IORef (S.HashSet (IdMap.Key Self))
 new :: IO Self
 new = Self <$> newIORef IdMap.empty <*> newIORef S.empty
 
-state :: Out.Triggerer -> IO Bool
-state out = (1 ==) <$> Out.parentCount out
+state :: Out.Triggerer -> IO Int
+state out = Out.parentCount out
 
 addListener :: Listener -> Self -> IO (IdMap.Key Self)
 addListener newListener Self{..} = do
@@ -33,7 +33,7 @@ addListener newListener Self{..} = do
 
 -- Children's parents are only weak references.
 -- We decref all children in `free` - after our master (Out) says.
-removeListener :: (IdMap.Key Self) -> Self -> IO ()
+removeListener :: IdMap.Key Self -> Self -> IO ()
 removeListener key Self{..} = do
   modifyIORef' listeners (IdMap.remove key)
   modifyIORef' pendings (S.delete key)

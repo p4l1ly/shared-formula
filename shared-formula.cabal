@@ -33,6 +33,7 @@ library
       Data.SimplifiedFormula.Agents.Null
       Data.SimplifiedFormula.Agents.ShareSet
       Data.SimplifiedFormula.Agents.SingleParent
+      Data.SimplifiedFormula.Agents.Swallow
 
     other-modules:
       Data.SimplifiedFormula.Utils.IntSet

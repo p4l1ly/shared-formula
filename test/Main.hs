@@ -14,6 +14,7 @@ import qualified Data.SimplifiedFormula.Agents.And as AndAgent
 import qualified Data.SimplifiedFormula.Agents.Children as Children
 import qualified Data.SimplifiedFormula.Agents.Out as Out
 import qualified Data.SimplifiedFormula.Agents.ShareSet as ShareSet
+import qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
 import Test.Syd
 
 varListener :: Out.Self -> Out.Env -> IO (IORef (Maybe Out.Message))
@@ -492,8 +493,7 @@ main = sydTest $ do
       writeIORef bMsg (Just $ Out.Eval True)
       Out.triggerListeners (Out.Eval True) bTrig
 
-      Just (Out.Redirect a') <- AndAgent.state andAB env
-      a == a' `shouldBe` True
+      0 <- SingleParent.state (Out.triggerer andABOut)
       Just (Out.Redirect a') <- readIORef andABMsg
       a == a' `shouldBe` True
       Nothing <- Out.state andCAndABOut env
