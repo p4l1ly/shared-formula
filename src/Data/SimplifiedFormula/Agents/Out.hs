@@ -20,6 +20,7 @@ import qualified Data.SimplifiedFormula.Utils.IdMap as IdMap
 data Node
   = And AndAgent.Self
   | Leaf (IORef (Maybe Message))
+  | ConstLeaf Message
 
 newEnv :: IO Env
 newEnv = do
@@ -101,8 +102,8 @@ handlePendings Triggerer{..} = rec
           rec
         Nothing -> return ()
 
-addListener :: (IdMap.Key Self -> Listener) -> Triggerer -> IO (IdMap.Key Self)
-addListener listener Triggerer{listeners} = do
+addListener :: (IdMap.Key Self -> Listener) -> Self -> IO (IdMap.Key Self)
+addListener listener self@Self{triggerer = Triggerer{..}} = do
   listeners_ <- readIORef listeners
   let (key, listeners_') = IdMap.add listener listeners_
   writeIORef listeners listeners_'
@@ -112,6 +113,9 @@ parentCount :: Triggerer -> IO Int
 parentCount Triggerer{..} = do
   foldToLimitedSize IdMap.foldElems 2 <$> readIORef listeners
 
+parentCountFull :: Triggerer -> IO Int
+parentCountFull Triggerer{..} = readIORef listeners <&> M.size . IdMap.items
+
 removeListener :: IdMap.Key Self -> Self -> Env -> IO ()
 removeListener key self@Self{triggerer = Triggerer{..}, implementation} env = do
   listeners_ <- readIORef listeners
@@ -119,6 +123,14 @@ removeListener key self@Self{triggerer = Triggerer{..}, implementation} env = do
   writeIORef listeners listeners_'
   modifyIORef' pendings (M.delete key)
   let parentCount = foldToLimitedSize IdMap.foldElems 2 listeners_'
+  case implementation of
+    And andAgent -> AndAgent.onDecRef andAgent parentCount env
+    Leaf _ -> return ()
+
+pingRefCount :: Self -> Env -> IO ()
+pingRefCount self@Self{triggerer = Triggerer{..}, implementation} env = do
+  listeners_ <- readIORef listeners
+  let parentCount = foldToLimitedSize IdMap.foldElems 2 listeners_
   case implementation of
     And andAgent -> AndAgent.onDecRef andAgent parentCount env
     Leaf _ -> return ()

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Data.SimplifiedFormula.Agents.Singleton where
@@ -17,9 +18,7 @@ fromChilds childs = case S.sizeUpTo 2 childs of
   _ -> Nothing
 
 trigger :: Children.Message -> Maybe Out.Self
-trigger (Children.Remove _ newChilds _) = fromChilds newChilds
-trigger (Children.Replace _ newChilds _ _) = fromChilds newChilds
-trigger _ = Nothing
+trigger Children.Message{..} = fromChilds newState
 
 state :: Children.Self -> IO (Maybe Out.Self)
 state children = do

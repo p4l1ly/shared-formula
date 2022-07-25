@@ -16,7 +16,7 @@ data Env = Env
   , nextId :: IORef Integer
   }
 
-addListener :: (IdMap.Key Self -> Listener) -> Triggerer -> IO (IdMap.Key Self)
+addListener :: (IdMap.Key Self -> Listener) -> Self -> IO (IdMap.Key Self)
 removeListener :: IdMap.Key Self -> Self -> Env -> IO ()
 triggerer :: Self -> Triggerer
 state :: Self -> Env -> IO (Maybe Message)

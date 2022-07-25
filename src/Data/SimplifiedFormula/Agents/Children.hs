@@ -21,29 +21,22 @@ import qualified Data.SimplifiedFormula.Utils.IdMap as IdMap
 
 type State = S.HashSet Out.Self
 
-data Message
-  = Init State
-  | Remove State State (S.HashSet Out.Self)
-  | Add State State (S.HashSet Out.Self)
-  | Replace State State (S.HashSet Out.Self) (S.HashSet Out.Self)
+data Message = Message
+  { oldState :: State
+  , newState :: State
+  , negdiff :: S.HashSet Out.Self
+  , posdiff :: S.HashSet Out.Self
+  }
   deriving (Show, Eq)
 
 instance Semigroup Message where
-  Add old1 _ diff1 <> Add _ new2 diff2 = Add old1 new2 (diff1 `S.union` diff2)
-  Remove old1 _ diff1 <> Remove _ new2 diff2 = Remove old1 new2 (diff1 `S.union` diff2)
-  _ <> _ = error "Children.Message.<> unimplemented: nontrivial TODO"
-
-newState :: Message -> State
-newState (Init new) = new
-newState (Add _ new _) = new
-newState (Remove _ new _) = new
-newState (Replace _ new _ _) = new
-
-oldState :: Message -> State
-oldState (Init old) = old
-oldState (Add old _ _) = old
-oldState (Remove old _ _) = old
-oldState (Replace old _ _ _) = old
+  Message old1 new1 minus1 plus1 <> Message old2 new2 minus2 plus2 =
+    Message old1 new2 (S.union minus1' minus2') (S.union plus1' plus2')
+    where
+      minus1' = S.difference minus1 plus2
+      minus2' = S.difference minus2 plus1
+      plus1' = S.difference plus1 minus2
+      plus2' = S.difference plus2 minus1
 
 type InternalListener = Message -> IO ()
 type ExternalListener = IdMap.Key Self -> Message -> IO ()
@@ -68,7 +61,7 @@ new = do
   return Self{..}
 
 addChild :: Out.Env -> Out.Self -> Message -> IO AddChildResult
-addChild outEnv child msg = rec child
+addChild outEnv child msg@(Message old new minus plus) = rec child
   where
     rec :: Out.Self -> IO AddChildResult
     rec child = do
@@ -77,28 +70,24 @@ addChild outEnv child msg = rec child
           Out.Eval b -> return (Eval b)
           Out.Redirect child' -> do
             rec child'
-        Nothing -> return do
-          if child `S.member` (newState msg)
-            then Present
-            else Added child $ case msg of
-              Init old -> Add old (S.insert child old) (S.singleton child)
-              Add old new plus -> Add old (S.insert child new) (S.insert child plus)
-              Remove old new minus
-                | S.member child minus ->
-                    let minus' = S.delete child minus
-                     in if S.null minus'
-                          then Init old
-                          else Remove old (S.insert child new) minus'
-                | otherwise ->
-                    Replace old (S.insert child new) minus (S.singleton child)
-              Replace old new minus plus
-                | S.member child minus ->
-                    let minus' = S.delete child minus
-                     in if S.null minus'
-                          then Add old (S.insert child new) plus
-                          else Replace old (S.insert child new) minus' plus
-                | otherwise ->
-                    Replace old (S.insert child new) minus (S.insert child plus)
+        Nothing -> return case () of
+          _
+            | child `S.member` (newState msg) -> Present
+            | S.member child minus ->
+                Added child $
+                  Message old (S.insert child new) (S.delete child minus) plus
+            | otherwise ->
+                Added child $
+                  Message old (S.insert child new) minus (S.insert child plus)
+
+remChild :: Out.Self -> Message -> Message
+remChild child = \case
+  Message old new minus plus
+    | S.member child plus ->
+        let plus' = S.delete child plus
+         in Message old (S.delete child new) minus plus'
+    | otherwise ->
+        Message old (S.delete child new) (S.insert child minus) plus
 
 onChildMsg ::
   Self ->
@@ -115,7 +104,7 @@ onChildMsg self@Self{..} listener outEnv child key msg = do
     let !childs_' = M.delete child childs_
         childSet = keySet childs_
         childSet' = keySet childs_'
-        removal = Remove childSet childSet' (S.singleton child)
+        removal = Message childSet childSet' (S.singleton child) S.empty
     case msg of
       Out.Eval _ -> listener removal
       Out.Redirect child' -> do
@@ -135,7 +124,7 @@ applyAdd self@Self{..} listener outEnv childs_ plus = do
   pendingRemovals_ <- readIORef pendingRemovals
   foldM -$ childs_ -$ plus $ \childs_' child -> do
     key <-
-      flip Out.addListener (Out.triggerer child) (onChildMsg self listener outEnv child)
+      flip Out.addListener child (onChildMsg self listener outEnv child)
     return $ M.insert child key childs_'
 
 applyRem ::
@@ -154,22 +143,14 @@ applyRem Self{..} childs_ minus = do
   return childs_'
 
 apply :: Self -> Out.Env -> InternalListener -> Message -> IO ()
-apply self@Self{..} outEnv listener msg = do
-  case msg of
-    Init _ -> return ()
-    Remove _ _ minus -> do
-      childs_ <- readIORef childs
-      childs_' <- applyRem self childs_ minus
-      writeIORef childs childs_'
-    Add _ _ plus -> do
-      childs_ <- readIORef childs
-      childs_' <- applyAdd self listener outEnv childs_ plus
-      writeIORef childs childs_'
-    Replace _ _ minus plus -> do
-      childs_ <- readIORef childs
-      childs_' <- applyRem self childs_ minus
-      childs_'' <- applyAdd self listener outEnv childs_' plus
-      writeIORef childs childs_''
+apply self@Self{..} outEnv listener (Message _ _ minus plus) = do
+  childs_ <- readIORef childs
+  childs_' <- if S.null minus then return childs_ else applyRem self childs_ minus
+  childs_'' <-
+    if S.null plus
+      then return childs_'
+      else applyAdd self listener outEnv childs_' plus
+  writeIORef childs childs_''
 
 triggerListeners :: Self -> Out.Env -> Message -> IO ()
 triggerListeners self@Self{..} outEnv msg = do
