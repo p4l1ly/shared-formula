@@ -60,12 +60,11 @@ initShareSet outEnv out msg = ExceptT do
 triggerSwallow ::
   Out.Self ->
   Out.Env ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
   Children.Message ->
   Trigger
-triggerSwallow out outEnv children swallow msg@Children.Message{..} = ExceptT do
-  (add, rem) <- Swallow.triggerFromChildren swallow outEnv out children msg
+triggerSwallow out outEnv self@Self{..} msg@Children.Message{..} = ExceptT do
+  (add, rem) <- Swallow.triggerFromChildren swallow outEnv out self msg
   if S.null add && S.null rem
     then return (Right msg)
     else do
@@ -75,63 +74,59 @@ triggerSwallow out outEnv children swallow msg@Children.Message{..} = ExceptT do
         addChilds0 add outEnv againMsg'
           >>= triggerNullary
           >>= triggerSingleton
-          >>= triggerSwallow out outEnv children swallow
+          >>= triggerSwallow out outEnv self
           <&> (msg <>)
 
 finishTrigger ::
   Out.Self ->
   Out.Env ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
   Either Out.Message Children.Message ->
   IO ()
-finishTrigger out outEnv children swallow (Left outMsg) = do
+finishTrigger out outEnv self (Left outMsg) = do
   Out.triggerListeners outMsg out
-finishTrigger out outEnv children swallow (Right childrenMsg) = do
+finishTrigger out outEnv self@Self{..} (Right childrenMsg) = do
   Children.apply children outEnv childrenListener' childrenMsg
   Children.triggerListeners children outEnv childrenMsg
   where
-    childrenListener' = childrenListener out outEnv children swallow
+    childrenListener' = childrenListener out outEnv self
 
 childrenListener ::
   Out.Self ->
   Out.Env ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
   Children.Message ->
   IO ()
-childrenListener out outEnv children swallow =
-  finishTrigger out outEnv children swallow
-    <=< runExceptT . triggerFromChildren out outEnv children swallow
+childrenListener out outEnv self =
+  finishTrigger out outEnv self
+    <=< runExceptT . triggerFromChildren out outEnv self
 
 triggerFromChildren ::
   Out.Self ->
   Out.Env ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
   Children.Message ->
   Trigger
-triggerFromChildren out outEnv children swallow msg = do
+triggerFromChildren out outEnv self msg = do
   triggerNull outEnv msg
     >>= triggerNullary
     >>= triggerSingleton
-    >>= triggerSwallow out outEnv children swallow
+    >>= triggerSwallow out outEnv self
     >>= triggerShareSet outEnv
 
 addChilds ::
   Foldable f =>
   f Out.Self ->
   Out.Env ->
-  Children.Message ->
   Out.Self ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
+  Children.Message ->
   Trigger
-addChilds childs outEnv msg out children swallow =
+addChilds childs outEnv out self msg =
   addChilds0 childs outEnv msg
     >>= triggerNullary
     >>= triggerSingleton
-    >>= triggerSwallow out outEnv children swallow
+    >>= triggerSwallow out outEnv self
     >>= triggerShareSet outEnv
 
 addChilds0 ::
@@ -158,17 +153,17 @@ init ::
   Out.Self ->
   Self ->
   IO (Maybe Out.Message)
-init childs outEnv out Self{..} = do
+init childs outEnv out self@Self{..} = do
   runExceptT do
     addChilds0 childs outEnv msg
       >>= triggerNullary
       >>= triggerSingleton
-      >>= triggerSwallow out outEnv children swallow
+      >>= triggerSwallow out outEnv self
       >>= initShareSet outEnv out
     >>= \case
       Left outMsg -> return $ Just outMsg
       Right childrenMsg -> do
-        let childrenListener' = childrenListener out outEnv children swallow
+        let childrenListener' = childrenListener out outEnv self
         Children.apply children outEnv childrenListener' childrenMsg
         for_ childs (Out.freeIfZeroParents outEnv)
         return Nothing

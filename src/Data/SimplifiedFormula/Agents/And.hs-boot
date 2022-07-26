@@ -26,15 +26,13 @@ addChilds ::
   Foldable f =>
   f Out.Self ->
   Out.Env ->
-  Children.Message ->
   Out.Self ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
+  Children.Message ->
   Trigger
 finishTrigger ::
   Out.Self ->
   Out.Env ->
-  Children.Self ->
-  Swallow.Self ->
+  Self ->
   Either Out.Message Children.Message ->
   IO ()

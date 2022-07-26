@@ -53,18 +53,17 @@ removeChilds remChildKeys = do
     SingleParent.removeListener key sing
 
 addChilds ::
-  Self ->
   M.HashMap Out.Self (IdMap.Key SingleParent.Self) ->
   Out.Env ->
   Out.Self ->
-  Children.Self ->
+  And.Self ->
   S.HashSet Out.Self ->
   IO
     ( M.HashMap Out.Self (IdMap.Key SingleParent.Self)
     , S.HashSet Out.Self
     , S.HashSet Out.Self
     )
-addChilds self childs_ outEnv out children added = do
+addChilds childs_ outEnv out andSelf@And.Self{children} added = do
   foldM -$ (childs_, S.empty, S.empty) -$ added $ \old@(childs_', add, rem) -> \case
     child@Out.Self
       { Out.impl =
@@ -84,8 +83,8 @@ addChilds self childs_ outEnv out children added = do
               let new = S.delete child old
               let msg = Children.Message old new (S.singleton child) S.empty
               grandchilds <- Children.state grandchildren
-              runExceptT do And.addChilds grandchilds outEnv msg out children self
-                >>= And.finishTrigger out outEnv children self
+              runExceptT do And.addChilds grandchilds outEnv out andSelf msg
+                >>= And.finishTrigger out outEnv andSelf
               SingleParent.removeListener key singleParent
             return (M.insert child key childs_', add, rem)
     _ -> return old
@@ -94,18 +93,18 @@ triggerFromChildren ::
   Self ->
   Out.Env ->
   Out.Self ->
-  Children.Self ->
+  And.Self ->
   Children.Message ->
   IO (S.HashSet Out.Self, S.HashSet Out.Self)
 triggerFromChildren
-  self@Self{..}
+  Self{..}
   outEnv
   out
-  children
+  andSelf -- andSelf@And.Self{swallow = Self{..}}  causes a GHC bug
   (Children.Message _ _ minus plus) = do
     childs_ <- readIORef childs
     let (remChildKeys, childs_') = childsToRemove childs_ minus
-    (childs_'', add, rem) <- addChilds self childs_' outEnv out children plus
+    (childs_'', add, rem) <- addChilds childs_' outEnv out andSelf plus
     writeIORef childs childs_''
     removeChilds remChildKeys
     return (add, rem)
