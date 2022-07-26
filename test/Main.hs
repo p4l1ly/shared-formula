@@ -15,6 +15,7 @@ import qualified Data.SimplifiedFormula.Agents.Children as Children
 import qualified Data.SimplifiedFormula.Agents.Out as Out
 import qualified Data.SimplifiedFormula.Agents.ShareSet as ShareSet
 import qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
+import qualified Data.SimplifiedFormula.Utils.IdMap as IdMap
 import Test.Syd
 
 varListener :: Out.Self -> Out.Env -> IO (IORef (Maybe Out.Message))
@@ -24,6 +25,14 @@ varListener out outEnv = do
     writeIORef var (Just msg)
     Out.removeListener key out outEnv
   return var
+
+varListener' :: Out.Self -> Out.Env -> IO (IORef (Maybe Out.Message), IdMap.Key Out.Self)
+varListener' out outEnv = do
+  var <- newIORef Nothing
+  key <- Out.addListener -$ out $ \key msg -> do
+    writeIORef var (Just msg)
+    Out.removeListener key out outEnv
+  return (var, key)
 
 main :: IO ()
 main = sydTest $ do
@@ -420,251 +429,154 @@ main = sydTest $ do
   describe "AndAgent" do
     it "builds" do
       env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef Nothing
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
+      a <- Out.newLeaf env
+      b <- Out.newLeaf env
       a == b `shouldBe` False
 
-      outTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b, b] outTrig env
-      Nothing <- AndAgent.state andAB env
-      childs <- Children.state (AndAgent.children andAB)
+      Right (andAB, andABImpl) <- Out.newAnd' [a, b, b] env
+      childs <- Children.state (AndAgent.children andABImpl)
       childs == S.fromList [a, b] `shouldBe` True
 
-    it "redirects to 'a' if 'b' is True" do
+    it "redirects and evaluates" do
       env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef (Just $ Out.Eval True)
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
+      a <- Out.newLeaf env
+      b <- Out.newLeaf env
+      c <- Out.newLeaf env
 
-      outTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b] outTrig env
-      Just (Out.Redirect a') <- AndAgent.state andAB env
+      Right andAB <- Out.newAnd [a, b] env
+      andABVar <- varListener andAB env
+
+      Right (andCAndAB, andCAndABImpl) <- Out.newAnd' [andAB, c] env
+
+      Nothing <- Out.state andAB
+      Nothing <- Out.state andCAndAB
+      Nothing <- readIORef andABVar
+
+      Out.triggerListeners (Out.Eval True) b
+
+      0 <- Out.parentCountFull andAB
+      Just (Out.Redirect a') <- readIORef andABVar
       a == a' `shouldBe` True
-
-    it "evaluates if 'b' is False" do
-      env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef (Just $ Out.Eval False)
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
-
-      outTrig <- Out.newTriggerer
-      Nothing <- AndAgent.new [a, b] outTrig env
-      return ()
-
-    it "leaves trigger redirection, then evaluation" do
-      env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef Nothing
-      cMsg <- newIORef Nothing
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      cTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
-      c <- Out.new cTrig (Out.Leaf cMsg) env
-
-      andABTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b] andABTrig env
-      andABOut <- Out.new andABTrig (Out.And andAB) env
-      andABKey <- Out.addListener (\_ msg -> return ()) andABOut
-      andABMsg <- varListener andABOut env
-      ShareSet.add (AndAgent.children andAB) andABOut (Out.andShareEnv env)
-
-      andCAndABTrig <- Out.newTriggerer
-      Just andCAndAB <- AndAgent.new [andABOut, c] andCAndABTrig env
-      andCAndABOut <- Out.new andCAndABTrig (Out.And andCAndAB) env
-      andCAndABMsg <- varListener andCAndABOut env
-      ShareSet.add (AndAgent.children andCAndAB) andCAndABOut (Out.andShareEnv env)
-
-      Nothing <- Out.state andABOut env
-      Nothing <- Out.state andCAndABOut env
-      Nothing <- readIORef andABMsg
-      Nothing <- readIORef andCAndABMsg
-
-      writeIORef bMsg (Just $ Out.Eval True)
-      Out.triggerListeners (Out.Eval True) bTrig
-
-      1 <- Out.parentCountFull (Out.triggerer andABOut)
-      Just (Out.Redirect a') <- readIORef andABMsg
-      a == a' `shouldBe` True
-      Nothing <- Out.state andCAndABOut env
-      Nothing <- readIORef andCAndABMsg
-      childs <- Children.state (AndAgent.children andCAndAB)
+      Nothing <- Out.state andCAndAB
+      childs <- Children.state (AndAgent.children andCAndABImpl)
       childs == S.fromList [a, c] `shouldBe` True
 
-      writeIORef cMsg (Just $ Out.Eval False)
-      Out.triggerListeners (Out.Eval False) cTrig
+      Out.triggerListeners (Out.Eval False) c
 
-      Just (Out.Eval False) <- readIORef andCAndABMsg
+      Just (Out.Eval False) <- Out.state andCAndAB
       return ()
 
-    it "decRefs" do
+    it "decrements references" do
       env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef Nothing
-      cMsg <- newIORef Nothing
-      dMsg <- newIORef Nothing
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      cTrig <- Out.newTriggerer
-      dTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
-      c <- Out.new cTrig (Out.Leaf cMsg) env
-      d <- Out.new dTrig (Out.Leaf dMsg) env
+      a <- Out.newLeaf env
+      b <- Out.newLeaf env
+      c <- Out.newLeaf env
+      d <- Out.newLeaf env
 
       -- a & b
-      andABTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b] andABTrig env
-      andABOut <- Out.new andABTrig (Out.And andAB) env
-      andABKey <- Out.addListener (\_ msg -> return ()) andABOut
-      ShareSet.add (AndAgent.children andAB) andABOut (Out.andShareEnv env)
+      Right andAB <- Out.newAnd [a, b] env
+      (andABVar, andABKey) <- varListener' andAB env
 
       -- c & d
-      andCDTrig <- Out.newTriggerer
-      Just andCD <- AndAgent.new [c, d] andCDTrig env
-      andCDOut <- Out.new andCDTrig (Out.And andCD) env
-      andCDKey <- Out.addListener (\_ msg -> return ()) andCDOut
-      ShareSet.add (AndAgent.children andCD) andCDOut (Out.andShareEnv env)
+      Right andCD <- Out.newAnd [c, d] env
+      (andCDVar, andCDKey) <- varListener' andCD env
 
       -- (a & b) & (c & d)
-      andABCDTrig <- Out.newTriggerer
-      Just andABCD <- AndAgent.new [andABOut, andCDOut] andABCDTrig env
-      andABCDOut <- Out.new andABCDTrig (Out.And andABCD) env
-      andABCDKey <- Out.addListener (\_ msg -> return ()) andABCDOut
-      ShareSet.add (AndAgent.children andABCD) andABCDOut (Out.andShareEnv env)
+      Right andABCD <- Out.newAnd [andAB, andCD] env
+      (andABCDVar, andABCDKey) <- varListener' andABCD env
 
-      Out.parentCountFull aTrig >>= (`shouldBe` 1)
-      Out.parentCountFull bTrig >>= (`shouldBe` 1)
-      Out.parentCountFull cTrig >>= (`shouldBe` 1)
-      Out.parentCountFull dTrig >>= (`shouldBe` 1)
-      Out.parentCountFull andCDTrig >>= (`shouldBe` 2)
-      Out.parentCountFull andABTrig >>= (`shouldBe` 2)
-      Out.parentCountFull andABCDTrig >>= (`shouldBe` 1)
+      Out.parentCountFull a >>= (`shouldBe` 1)
+      Out.parentCountFull b >>= (`shouldBe` 1)
+      Out.parentCountFull c >>= (`shouldBe` 1)
+      Out.parentCountFull d >>= (`shouldBe` 1)
+      Out.parentCountFull andCD >>= (`shouldBe` 2)
+      Out.parentCountFull andAB >>= (`shouldBe` 2)
+      Out.parentCountFull andABCD >>= (`shouldBe` 1)
 
-      Out.removeListener andABCDKey andABCDOut env
+      Out.removeListener andABCDKey andABCD env
 
-      Out.parentCountFull aTrig >>= (`shouldBe` 1)
-      Out.parentCountFull bTrig >>= (`shouldBe` 1)
-      Out.parentCountFull cTrig >>= (`shouldBe` 1)
-      Out.parentCountFull dTrig >>= (`shouldBe` 1)
-      Out.parentCountFull andABTrig >>= (`shouldBe` 1)
-      Out.parentCountFull andCDTrig >>= (`shouldBe` 1)
-      Out.parentCountFull andABCDTrig >>= (`shouldBe` 0)
+      Out.parentCountFull a >>= (`shouldBe` 1)
+      Out.parentCountFull b >>= (`shouldBe` 1)
+      Out.parentCountFull c >>= (`shouldBe` 1)
+      Out.parentCountFull d >>= (`shouldBe` 1)
+      Out.parentCountFull andAB >>= (`shouldBe` 1)
+      Out.parentCountFull andCD >>= (`shouldBe` 1)
+      Out.parentCountFull andABCD >>= (`shouldBe` 0)
 
-      Out.removeListener andCDKey andCDOut env
+      Out.removeListener andCDKey andCD env
 
-      Out.parentCountFull aTrig >>= (`shouldBe` 1)
-      Out.parentCountFull bTrig >>= (`shouldBe` 1)
-      Out.parentCountFull cTrig >>= (`shouldBe` 0)
-      Out.parentCountFull dTrig >>= (`shouldBe` 0)
-      Out.parentCountFull andABTrig >>= (`shouldBe` 1)
-      Out.parentCountFull andCDTrig >>= (`shouldBe` 0)
-      Out.parentCountFull andABCDTrig >>= (`shouldBe` 0)
+      Out.parentCountFull a >>= (`shouldBe` 1)
+      Out.parentCountFull b >>= (`shouldBe` 1)
+      Out.parentCountFull c >>= (`shouldBe` 0)
+      Out.parentCountFull d >>= (`shouldBe` 0)
+      Out.parentCountFull andAB >>= (`shouldBe` 1)
+      Out.parentCountFull andCD >>= (`shouldBe` 0)
+      Out.parentCountFull andABCD >>= (`shouldBe` 0)
 
-      Out.removeListener andABKey andABOut env
+      Out.removeListener andABKey andAB env
 
-      Out.parentCountFull aTrig >>= (`shouldBe` 0)
-      Out.parentCountFull bTrig >>= (`shouldBe` 0)
-      Out.parentCountFull cTrig >>= (`shouldBe` 0)
-      Out.parentCountFull dTrig >>= (`shouldBe` 0)
-      Out.parentCountFull andABTrig >>= (`shouldBe` 0)
-      Out.parentCountFull andCDTrig >>= (`shouldBe` 0)
-      Out.parentCountFull andABCDTrig >>= (`shouldBe` 0)
+      Out.parentCountFull a >>= (`shouldBe` 0)
+      Out.parentCountFull b >>= (`shouldBe` 0)
+      Out.parentCountFull c >>= (`shouldBe` 0)
+      Out.parentCountFull d >>= (`shouldBe` 0)
+      Out.parentCountFull andAB >>= (`shouldBe` 0)
+      Out.parentCountFull andCD >>= (`shouldBe` 0)
+      Out.parentCountFull andABCD >>= (`shouldBe` 0)
 
     it "is shared" do
       env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef Nothing
-      cMsg <- newIORef Nothing
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      cTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
-      c <- Out.new cTrig (Out.Leaf cMsg) env
+      a <- Out.newLeaf env
+      b <- Out.newLeaf env
+      c <- Out.newLeaf env
 
-      andABTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b] andABTrig env
-      Nothing <- AndAgent.state andAB env
-      andABOut <- Out.new andABTrig (Out.And andAB) env
-      ShareSet.add (AndAgent.children andAB) andABOut (Out.andShareEnv env)
+      -- a & b
+      Right andAB <- Out.newAnd [a, b] env
+      (andABVar, andABKey) <- varListener' andAB env
 
-      andABTrig' <- Out.newTriggerer
-      Just andAB' <- AndAgent.new [b, a] andABTrig' env
-      Just _ <- AndAgent.state andAB' env
+      -- b & a
+      Left (Out.Redirect andBA) <- Out.newAnd [b, a] env
+      andBA `shouldBe` andAB
 
-      andBCTrig <- Out.newTriggerer
-      Just andBC <- AndAgent.new [b, c] andBCTrig env
-      Nothing <- AndAgent.state andBC env
-      andBCOut <- Out.new andBCTrig (Out.And andBC) env
-      andBCMsg <- varListener andBCOut env
-      ShareSet.add (AndAgent.children andBC) andBCOut (Out.andShareEnv env)
+      -- b & c
+      Right andBC <- Out.newAnd [b, c] env
 
-      writeIORef cMsg (Just $ Out.Redirect a)
-      Out.triggerListeners (Out.Redirect a) cTrig
+      Out.triggerListeners (Out.Redirect a) c
 
-      Just (Out.Redirect andBCOut') <- readIORef andBCMsg
-      andBCOut' == andABOut `shouldBe` True
+      Just (Out.Redirect andBC') <- Out.state andBC
+      andBC' `shouldBe` andAB
 
     it "swallows" do
       env <- Out.newEnv
-      aMsg <- newIORef Nothing
-      bMsg <- newIORef Nothing
-      cMsg <- newIORef Nothing
-      dMsg <- newIORef Nothing
-      aTrig <- Out.newTriggerer
-      bTrig <- Out.newTriggerer
-      cTrig <- Out.newTriggerer
-      dTrig <- Out.newTriggerer
-      a <- Out.new aTrig (Out.Leaf aMsg) env
-      b <- Out.new bTrig (Out.Leaf bMsg) env
-      c <- Out.new cTrig (Out.Leaf cMsg) env
-      d <- Out.new dTrig (Out.Leaf dMsg) env
+      a <- Out.newLeaf env
+      b <- Out.newLeaf env
+      c <- Out.newLeaf env
+      d <- Out.newLeaf env
 
-      andABTrig <- Out.newTriggerer
-      Just andAB <- AndAgent.new [a, b] andABTrig env
-      Nothing <- AndAgent.state andAB env
-      andABOut <- Out.new andABTrig (Out.And andAB) env
-      andABKey <- Out.addListener (\_ msg -> return ()) andABOut
-      ShareSet.add (AndAgent.children andAB) andABOut (Out.andShareEnv env)
+      -- a & b
+      Right andAB <- Out.newAnd [a, b] env
+      (andABVar, andABKey) <- varListener' andAB env
 
-      Out.parentCountFull andABTrig >>= (`shouldBe` 1)
+      Out.parentCountFull andAB >>= (`shouldBe` 1)
 
-      andABCTrig <- Out.newTriggerer
-      Just andABC <- AndAgent.new [andABOut, c] andABCTrig env
-      Nothing <- AndAgent.state andABC env
-      andABCOut <- Out.new andABCTrig (Out.And andABC) env
-      ShareSet.add (AndAgent.children andABC) andABCOut (Out.andShareEnv env)
+      -- (a & b) & c
+      Right andABC <- Out.newAnd [andAB, c] env
 
-      Out.parentCountFull andABTrig >>= (`shouldBe` 2)
+      Out.parentCountFull andAB >>= (`shouldBe` 2)
 
-      andABCDTrig <- Out.newTriggerer
-      Just andABCD <- AndAgent.new [andABCOut, d] andABCDTrig env
-      Nothing <- AndAgent.state andABCD env
-      andABCDOut <- Out.new andABCDTrig (Out.And andABCD) env
-      ShareSet.add (AndAgent.children andABCD) andABCDOut (Out.andShareEnv env)
+      -- (a & b) & c & d
+      Right (andABCD, andABCDImpl) <- Out.newAnd' [andABC, d] env
 
-      Children.state (AndAgent.children andABCD)
-        >>= (`shouldBe` S.fromList [andABOut, c, d])
-      Out.parentCountFull andABTrig >>= (`shouldBe` 2)
+      Children.state (AndAgent.children andABCDImpl)
+        >>= (`shouldBe` S.fromList [andAB, c, d])
+      Out.parentCountFull andABC >>= (`shouldBe` 0)
+      Out.parentCountFull andAB >>= (`shouldBe` 2)
 
-      Out.removeListener andABKey andABOut env
+      Out.removeListener andABKey andAB env
 
-      Children.state (AndAgent.children andABCD)
+      Children.state (AndAgent.children andABCDImpl)
         >>= (`shouldBe` S.fromList [a, b, c, d])
-      Out.parentCountFull andABTrig >>= (`shouldBe` 0)
-      Out.parentCountFull aTrig >>= (`shouldBe` 1)
-      Out.parentCountFull bTrig >>= (`shouldBe` 1)
-      Out.parentCountFull cTrig >>= (`shouldBe` 1)
-      Out.parentCountFull dTrig >>= (`shouldBe` 1)
+      Out.parentCountFull andAB >>= (`shouldBe` 0)
+      Out.parentCountFull a >>= (`shouldBe` 1)
+      Out.parentCountFull b >>= (`shouldBe` 1)
+      Out.parentCountFull c >>= (`shouldBe` 1)
+      Out.parentCountFull d >>= (`shouldBe` 1)

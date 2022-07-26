@@ -9,8 +9,3 @@ import qualified Data.SimplifiedFormula.Agents.Out as Out
 
 trigger :: Children.Message -> Bool
 trigger Children.Message{..} = S.null newState
-
-state :: Children.Self -> IO Bool
-state children = do
-  childs <- Children.state children
-  return $ S.null childs

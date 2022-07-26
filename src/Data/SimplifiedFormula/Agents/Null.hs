@@ -10,26 +10,22 @@ import qualified Data.SimplifiedFormula.Agents.Out as Out
 
 type Listener = IO ()
 
-step :: Bool -> Out.Env -> Out.Self -> IO Bool -> IO Bool
-step isOr outEnv x b =
+step :: Out.Self -> IO Bool -> IO Bool
+step x b =
   b >>= \case
     True -> return True
     False ->
-      Out.state x outEnv >>= \case
-        Just (Out.Eval b) | b == isOr -> return True
+      Out.state x >>= \case
+        Just (Out.Eval False) -> return True
         _ -> return False
 
-triggerFromRemoved :: Bool -> S.HashSet Out.Self -> Out.Env -> IO Bool
-triggerFromRemoved isOr removed outEnv = S.foldr (step isOr outEnv) (pure False) removed
+trigger :: Children.Message -> IO Bool
+trigger (Children.Message _ _ minus _) = S.foldr step (pure False) minus
 
-trigger :: Bool -> Children.Message -> Out.Env -> IO Bool
-trigger isOr (Children.Message _ _ removed _) outEnv =
-  triggerFromRemoved isOr removed outEnv
-
-triggerFromAddChilds :: Maybe Children.Message -> Bool
-triggerFromAddChilds = isNothing
-
-state :: Bool -> Children.Self -> Out.Env -> IO Bool
-state isOr children outEnv = do
-  childs <- Children.state children
-  S.foldr (step isOr outEnv) (pure False) childs
+onAddChild ::
+  Children.Message -> Children.AddChildResult -> Either Out.Message Children.Message
+onAddChild msg = \case
+  Children.Present -> Right msg
+  Children.Eval True -> Right msg
+  Children.Eval False -> Left $ Out.Eval False
+  Children.Added child' msg' -> Right msg'

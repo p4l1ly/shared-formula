@@ -21,8 +21,8 @@ type Pendings = IORef (S.HashSet (IdMap.Key Self))
 new :: IO Self
 new = Self <$> newIORef IdMap.empty <*> newIORef S.empty
 
-state :: Out.Triggerer -> IO Int
-state out = Out.parentCount out
+state :: Out.Self -> IO Bool
+state out = (== 0) <$> Out.parentCount out
 
 addListener :: Listener -> Self -> IO (IdMap.Key Self)
 addListener newListener Self{..} = do

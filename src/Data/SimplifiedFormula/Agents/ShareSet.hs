@@ -1,4 +1,7 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Data.SimplifiedFormula.Agents.ShareSet where
@@ -18,16 +21,14 @@ type Listener = Message -> IO ()
 newEnv :: IO EnvRef
 newEnv = EnvRef <$> newIORef M.empty
 
-state :: Children.Self -> EnvRef -> IO (Maybe Out.Self)
-state children (EnvRef envRef) = do
-  M.lookup
-    <$> Children.state children
-    <*> readIORef envRef
-
-add :: Children.Self -> Out.Self -> EnvRef -> IO ()
-add children out (EnvRef envRef) = do
-  childs <- Children.state children
-  modifyIORef' envRef (M.insert childs out)
+init :: Children.Message -> Out.Self -> EnvRef -> IO (Maybe Out.Self)
+init Children.Message{Children.newState} out (EnvRef envRef) = do
+  env <- readIORef envRef
+  let (out', !env') = M.alterF -$ newState -$ env $ \case
+        Nothing -> (Nothing, Just out)
+        Just out' -> (Just out', Just out')
+  writeIORef envRef env'
+  return out'
 
 free :: Children.Self -> EnvRef -> IO ()
 free children (EnvRef envRef) = do
@@ -40,16 +41,14 @@ free children (EnvRef envRef) = do
   writeIORef envRef env'
 
 trigger :: Children.Message -> EnvRef -> IO (Maybe Out.Self)
-trigger msg (EnvRef envRef) = do
-  let oldState = Children.oldState msg
-  let newState = Children.newState msg
+trigger msg@Children.Message{..} (EnvRef envRef) = do
   env <- readIORef envRef
   let result = M.lookup newState env
   case result of
     Just out -> return ()
     Nothing -> do
       let (out, env') = M.alterF -$ oldState -$ env $ \case
-            Nothing -> error "ShareSet: change without old value"
+            Nothing -> error $ "ShareSet: change without old value: " ++ show msg
             Just out -> (out, Nothing)
       writeIORef envRef (M.insert newState out env')
   return result

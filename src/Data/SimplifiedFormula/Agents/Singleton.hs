@@ -12,17 +12,7 @@ import qualified Data.SimplifiedFormula.Utils.HashSet as S
 type Message = Out.Self
 type Listener = Message -> IO ()
 
-fromChilds :: S.HashSet a -> Maybe a
-fromChilds childs = case S.sizeUpTo 2 childs of
-  1 -> Just (S.peak childs)
-  _ -> Nothing
-
 trigger :: Children.Message -> Maybe Out.Self
-trigger Children.Message{..} = fromChilds newState
-
-state :: Children.Self -> IO (Maybe Out.Self)
-state children = do
-  childs <- Children.state children
-  return case S.sizeUpTo 2 childs of
-    1 -> Just (S.peak childs)
-    _ -> Nothing
+trigger Children.Message{..} = case S.sizeUpTo 2 newState of
+  1 -> Just (S.peak newState)
+  _ -> Nothing

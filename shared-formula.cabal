@@ -34,10 +34,10 @@ library
       Data.SimplifiedFormula.Agents.ShareSet
       Data.SimplifiedFormula.Agents.SingleParent
       Data.SimplifiedFormula.Agents.Swallow
+      Data.SimplifiedFormula.Utils.IdMap
 
     other-modules:
       Data.SimplifiedFormula.Utils.IntSet
-      Data.SimplifiedFormula.Utils.IdMap
       Data.SimplifiedFormula.Utils.HashSet
       Data.SimplifiedFormula.Utils.Fold
 

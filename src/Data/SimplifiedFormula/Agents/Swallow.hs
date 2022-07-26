@@ -6,6 +6,7 @@
 module Data.SimplifiedFormula.Agents.Swallow where
 
 import Control.Monad
+import Control.Monad.Trans.Except
 import Data.Foldable
 import Data.Function.Apply
 import qualified Data.HashMap.Strict as M
@@ -48,14 +49,14 @@ removeChilds ::
   IO ()
 removeChilds remChildKeys = do
   for_ remChildKeys \(child, key) -> do
-    let Out.Self{Out.implementation = Out.And And.Self{And.singleParent = sing}} = child
+    let Out.Self{Out.impl = Out.And And.Self{And.singleParent = sing}} = child
     SingleParent.removeListener key sing
 
 addChilds ::
   Self ->
   M.HashMap Out.Self (IdMap.Key SingleParent.Self) ->
   Out.Env ->
-  Out.Triggerer ->
+  Out.Self ->
   Children.Self ->
   S.HashSet Out.Self ->
   IO
@@ -63,29 +64,28 @@ addChilds ::
     , S.HashSet Out.Self
     , S.HashSet Out.Self
     )
-addChilds self childs_ outEnv outTrig children added = do
+addChilds self childs_ outEnv out children added = do
   foldM -$ (childs_, S.empty, S.empty) -$ added $ \old@(childs_', add, rem) -> \case
     child@Out.Self
-      { Out.implementation =
+      { Out.impl =
         Out.And
           And.Self
             { And.singleParent = singleParent
             , And.children = grandchildren
             }
       } -> do
-        SingleParent.state (Out.triggerer child) >>= \case
-          0 -> do
+        SingleParent.state child >>= \case
+          True -> do
             grandchilds <- Children.state grandchildren
             return (childs_', foldr S.insert add grandchilds, S.insert child rem)
-          _ -> do
+          False -> do
             key <- SingleParent.addListener -$ singleParent $ \key -> do
               old <- Children.state children
               let new = S.delete child old
               let msg = Children.Message old new (S.singleton child) S.empty
               grandchilds <- Children.state grandchildren
-              And.addChilds grandchilds outEnv msg
-                >>= And.triggerFromAddChilds outTrig outEnv children self
-                >>= And.finishTrigger outTrig outEnv children self
+              runExceptT do And.addChilds grandchilds outEnv msg out children self
+                >>= And.finishTrigger out outEnv children self
               SingleParent.removeListener key singleParent
             return (M.insert child key childs_', add, rem)
     _ -> return old
@@ -93,19 +93,19 @@ addChilds self childs_ outEnv outTrig children added = do
 triggerFromChildren ::
   Self ->
   Out.Env ->
-  Out.Triggerer ->
+  Out.Self ->
   Children.Self ->
   Children.Message ->
   IO (S.HashSet Out.Self, S.HashSet Out.Self)
 triggerFromChildren
   self@Self{..}
   outEnv
-  outTrig
+  out
   children
   (Children.Message _ _ minus plus) = do
     childs_ <- readIORef childs
     let (remChildKeys, childs_') = childsToRemove childs_ minus
-    (childs_'', add, rem) <- addChilds self childs_' outEnv outTrig children plus
+    (childs_'', add, rem) <- addChilds self childs_' outEnv out children plus
     writeIORef childs childs_''
     removeChilds remChildKeys
     return (add, rem)

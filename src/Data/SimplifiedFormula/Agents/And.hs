@@ -8,7 +8,8 @@
 module Data.SimplifiedFormula.Agents.And where
 
 import Control.Monad
-import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Except
 import Data.Foldable
 import Data.Functor
 import qualified Data.HashMap.Strict as M
@@ -29,160 +30,150 @@ data Self = Self
   , swallow :: !Swallow.Self
   }
 
-triggerNullFromAddChilds ::
-  Out.Triggerer -> Maybe Children.Message -> IO (Maybe Children.Message)
-triggerNullFromAddChilds outTrig msg = do
-  case Null.triggerFromAddChilds msg of
-    True -> Nothing <$ Out.triggerListeners (Out.Eval False) outTrig
-    False -> return msg
+type Trigger = ExceptT Out.Message IO Children.Message
 
-triggerNull ::
-  Out.Triggerer -> Out.Env -> Children.Message -> IO (Maybe Children.Message)
-triggerNull outTrig outEnv msg = do
-  Null.trigger False msg outEnv >>= \case
-    True -> Nothing <$ Out.triggerListeners (Out.Eval False) outTrig
-    False -> return $ Just msg
+triggerNull :: Out.Env -> Children.Message -> Trigger
+triggerNull outEnv msg = ExceptT do
+  Null.trigger msg <&> \case
+    True -> Left (Out.Eval False)
+    False -> Right msg
 
-triggerNullary :: Out.Triggerer -> Children.Message -> IO (Maybe Children.Message)
-triggerNullary outTrig msg
-  | Nullary.trigger msg = do
-      Nothing <$ Out.triggerListeners (Out.Eval True) outTrig
-  | otherwise = do
-      return $ Just msg
+triggerNullary :: Children.Message -> Trigger
+triggerNullary msg
+  | Nullary.trigger msg = throwE (Out.Eval True)
+  | otherwise = return msg
 
-triggerSingleton :: Out.Triggerer -> Children.Message -> IO (Maybe Children.Message)
-triggerSingleton outTrig msg = do
-  case Singleton.trigger msg of
-    Just out' -> Nothing <$ Out.triggerListeners (Out.Redirect out') outTrig
-    Nothing -> return $ Just msg
+triggerSingleton :: Children.Message -> Trigger
+triggerSingleton msg = ExceptT do
+  return $ maybe (Right msg) (Left . Out.Redirect) (Singleton.trigger msg)
 
-triggerShareSet :: Out.Triggerer -> Out.Env -> Children.Message -> IO (Maybe Children.Message)
-triggerShareSet outTrig outEnv msg = do
-  ShareSet.trigger msg (Out.andShareEnv outEnv) >>= \case
-    Just out' -> Nothing <$ Out.triggerListeners (Out.Redirect out') outTrig
-    Nothing -> return $ Just msg
+triggerShareSet :: Out.Env -> Children.Message -> Trigger
+triggerShareSet outEnv msg = ExceptT do
+  ShareSet.trigger msg (Out.andShareEnv outEnv)
+    <&> maybe (Right msg) (Left . Out.Redirect)
+
+initShareSet :: Out.Env -> Out.Self -> Children.Message -> Trigger
+initShareSet outEnv out msg = ExceptT do
+  ShareSet.init msg out (Out.andShareEnv outEnv)
+    <&> maybe (Right msg) (Left . Out.Redirect)
 
 triggerSwallow ::
-  Out.Triggerer ->
+  Out.Self ->
   Out.Env ->
   Children.Self ->
   Swallow.Self ->
   Children.Message ->
-  IO (Maybe Children.Message)
-triggerSwallow outTrig outEnv children swallow msg@Children.Message{..} = do
-  (add, rem) <- Swallow.triggerFromChildren swallow outEnv outTrig children msg
+  Trigger
+triggerSwallow out outEnv children swallow msg@Children.Message{..} = ExceptT do
+  (add, rem) <- Swallow.triggerFromChildren swallow outEnv out children msg
   if S.null add && S.null rem
-    then return $ Just msg
+    then return (Right msg)
     else do
       let againMsg = Children.Message newState newState S.empty S.empty
-      msg' <- addChilds add outEnv (foldr Children.remChild againMsg rem)
-      runMaybeT $
-        MaybeT (triggerNullFromAddChilds outTrig msg')
-          >>= MaybeT . triggerNullary outTrig
-          >>= MaybeT . triggerSingleton outTrig
-          >>= MaybeT . triggerSwallow outTrig outEnv children swallow
-          <&> (fromJust msg' <>)
+      let againMsg' = foldr Children.remChild againMsg rem
+      runExceptT $ do
+        addChilds0 add outEnv againMsg'
+          >>= triggerNullary
+          >>= triggerSingleton
+          >>= triggerSwallow out outEnv children swallow
+          <&> (msg <>)
 
 finishTrigger ::
-  Out.Triggerer ->
+  Out.Self ->
   Out.Env ->
   Children.Self ->
   Swallow.Self ->
-  Maybe Children.Message ->
+  Either Out.Message Children.Message ->
   IO ()
-finishTrigger outTrig outEnv children swallow Nothing = do
-  return ()
-finishTrigger outTrig outEnv children swallow (Just msg) = do
-  let onMessage =
-        finishTrigger outTrig outEnv children swallow
-          <=< triggerFromChildren outTrig outEnv children swallow
-  Children.apply children outEnv onMessage msg
-  Children.triggerListeners children outEnv msg
+finishTrigger out outEnv children swallow (Left outMsg) = do
+  Out.triggerListeners outMsg out
+finishTrigger out outEnv children swallow (Right childrenMsg) = do
+  Children.apply children outEnv childrenListener' childrenMsg
+  Children.triggerListeners children outEnv childrenMsg
+  where
+    childrenListener' = childrenListener out outEnv children swallow
 
-triggerFromChildren ::
-  Out.Triggerer ->
+childrenListener ::
+  Out.Self ->
   Out.Env ->
   Children.Self ->
   Swallow.Self ->
   Children.Message ->
-  IO (Maybe Children.Message)
-triggerFromChildren outTrig outEnv children swallow msg = do
-  runMaybeT $
-    MaybeT (triggerNull outTrig outEnv msg)
-      >>= MaybeT . triggerNullary outTrig
-      >>= MaybeT . triggerSingleton outTrig
-      >>= MaybeT . triggerSwallow outTrig outEnv children swallow
-      >>= MaybeT . triggerShareSet outTrig outEnv
+  IO ()
+childrenListener out outEnv children swallow =
+  finishTrigger out outEnv children swallow
+    <=< runExceptT . triggerFromChildren out outEnv children swallow
 
-triggerFromAddChilds ::
-  Out.Triggerer ->
+triggerFromChildren ::
+  Out.Self ->
   Out.Env ->
   Children.Self ->
   Swallow.Self ->
-  Maybe Children.Message ->
-  IO (Maybe Children.Message)
-triggerFromAddChilds outTrig outEnv children swallow msg = do
-  runMaybeT $
-    MaybeT (triggerNullFromAddChilds outTrig msg)
-      >>= MaybeT . triggerNullary outTrig
-      >>= MaybeT . triggerSingleton outTrig
-      >>= MaybeT . triggerSwallow outTrig outEnv children swallow
-      >>= MaybeT . triggerShareSet outTrig outEnv
+  Children.Message ->
+  Trigger
+triggerFromChildren out outEnv children swallow msg = do
+  triggerNull outEnv msg
+    >>= triggerNullary
+    >>= triggerSingleton
+    >>= triggerSwallow out outEnv children swallow
+    >>= triggerShareSet outEnv
 
 addChilds ::
   Foldable f =>
   f Out.Self ->
   Out.Env ->
   Children.Message ->
-  IO (Maybe Children.Message)
-addChilds childs outEnv msg = do
-  foldr process (return . Just) childs msg
+  Out.Self ->
+  Children.Self ->
+  Swallow.Self ->
+  Trigger
+addChilds childs outEnv msg out children swallow =
+  addChilds0 childs outEnv msg
+    >>= triggerNullary
+    >>= triggerSingleton
+    >>= triggerSwallow out outEnv children swallow
+    >>= triggerShareSet outEnv
+
+addChilds0 ::
+  Foldable f =>
+  f Out.Self ->
+  Out.Env ->
+  Children.Message ->
+  Trigger
+addChilds0 childs outEnv msg = foldM process msg childs
   where
-    process child cont msg = do
-      Children.addChild outEnv child msg >>= \case
-        Children.Present -> cont msg
-        Children.Eval True -> cont msg
-        Children.Eval False -> return Nothing
-        Children.Added child' msg' -> cont msg'
+    process msg child = ExceptT do
+      Children.addChild outEnv child msg <&> Null.onAddChild msg
 
-new :: [Out.Self] -> Out.Triggerer -> Out.Env -> IO (Maybe Self)
-new childs0 outTrig outEnv = do
+new :: IO Self
+new = do
   children <- Children.new
-  let rec :: Foldable f => f Out.Self -> Children.Message -> IO (Maybe Self)
-      rec childs msg =
-        addChilds childs outEnv msg >>= \case
-          Nothing -> return Nothing
-          Just msg -> do
-            swallow <- Swallow.new
-            singleParent <- SingleParent.new
-            (add, rem) <- Swallow.triggerFromChildren swallow outEnv outTrig children msg
-            if S.null add && S.null rem
-              then do
-                let childrenListener =
-                      finishTrigger outTrig outEnv children swallow
-                        <=< triggerFromChildren outTrig outEnv children swallow
-                Children.apply children outEnv childrenListener msg
-                let finalChilds = Children.newState msg
-                for_ childs0 \child -> do
-                  unless (S.member child finalChilds) do Out.pingRefCount child outEnv
-                return $ Just Self{..}
-              else rec add (foldr Children.remChild msg rem)
-  rec childs0 (Children.Message S.empty S.empty S.empty S.empty)
+  swallow <- Swallow.new
+  singleParent <- SingleParent.new
+  return Self{..}
 
-state :: Self -> Out.Env -> IO (Maybe Out.Message)
-state Self{..} outEnv = do
-  Nullary.state children >>= \case
-    True -> return $ Just $ Out.Eval True
-    False ->
-      Singleton.state children >>= \case
-        Just out -> return $ Just $ Out.Redirect out
-        Nothing ->
-          Null.state False children outEnv >>= \case
-            True -> return $ Just $ Out.Eval False
-            False ->
-              ShareSet.state children (Out.andShareEnv outEnv) >>= \case
-                Just out -> return $ Just $ Out.Redirect out
-                Nothing -> return Nothing
+init ::
+  [Out.Self] ->
+  Out.Env ->
+  Out.Self ->
+  Self ->
+  IO (Maybe Out.Message)
+init childs outEnv out Self{..} = do
+  runExceptT do
+    addChilds0 childs outEnv msg
+      >>= triggerNullary
+      >>= triggerSingleton
+      >>= triggerSwallow out outEnv children swallow
+      >>= initShareSet outEnv out
+    >>= \case
+      Left outMsg -> return $ Just outMsg
+      Right childrenMsg -> do
+        let childrenListener' = childrenListener out outEnv children swallow
+        Children.apply children outEnv childrenListener' childrenMsg
+        for_ childs (Out.freeIfZeroParents outEnv)
+        return Nothing
+  where
+    msg = Children.Message S.empty S.empty S.empty S.empty
 
 onDecRef :: Self -> Int -> Out.Env -> IO ()
 onDecRef Self{..} 0 outEnv = do

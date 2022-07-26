@@ -1,5 +1,6 @@
 module Data.SimplifiedFormula.Agents.And where
 
+import Control.Monad.Trans.Except
 import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.Children as Children
 import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.Out as Out
 import {-# SOURCE #-} qualified Data.SimplifiedFormula.Agents.SingleParent as SingleParent
@@ -11,27 +12,29 @@ data Self = Self
   , singleParent :: !SingleParent.Self
   , swallow :: !Swallow.Self
   }
+type Trigger = ExceptT Out.Message IO Children.Message
 
-new :: [Out.Self] -> Out.Triggerer -> Out.Env -> IO (Maybe Self)
-state :: Self -> Out.Env -> IO (Maybe Out.Message)
+new :: IO Self
+init ::
+  [Out.Self] ->
+  Out.Env ->
+  Out.Self ->
+  Self ->
+  IO (Maybe Out.Message)
 onDecRef :: Self -> Int -> Out.Env -> IO ()
 addChilds ::
   Foldable f =>
   f Out.Self ->
   Out.Env ->
   Children.Message ->
-  IO (Maybe Children.Message)
-triggerFromAddChilds ::
-  Out.Triggerer ->
-  Out.Env ->
+  Out.Self ->
   Children.Self ->
   Swallow.Self ->
-  Maybe Children.Message ->
-  IO (Maybe Children.Message)
+  Trigger
 finishTrigger ::
-  Out.Triggerer ->
+  Out.Self ->
   Out.Env ->
   Children.Self ->
   Swallow.Self ->
-  Maybe Children.Message ->
+  Either Out.Message Children.Message ->
   IO ()

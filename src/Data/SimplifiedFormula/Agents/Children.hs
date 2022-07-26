@@ -65,7 +65,7 @@ addChild outEnv child msg@(Message old new minus plus) = rec child
   where
     rec :: Out.Self -> IO AddChildResult
     rec child = do
-      Out.state child outEnv >>= \case
+      Out.state child >>= \case
         Just msg -> case msg of
           Out.Eval b -> return (Eval b)
           Out.Redirect child' -> do
@@ -123,8 +123,7 @@ applyAdd ::
 applyAdd self@Self{..} listener outEnv childs_ plus = do
   pendingRemovals_ <- readIORef pendingRemovals
   foldM -$ childs_ -$ plus $ \childs_' child -> do
-    key <-
-      flip Out.addListener child (onChildMsg self listener outEnv child)
+    key <- flip Out.addListener child (onChildMsg self listener outEnv child)
     return $ M.insert child key childs_'
 
 applyRem ::
